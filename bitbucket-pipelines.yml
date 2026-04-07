@@ -65,8 +65,8 @@ pipelines:
             - export SERVICE="frontend"
             - *docker_build
 
-  tags:
-    '**':
+  branches:
+    main:
       - step:
           <<: *push_step
           name: Push backend image
