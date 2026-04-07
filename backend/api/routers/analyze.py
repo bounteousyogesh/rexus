@@ -1,0 +1,922 @@
+"""
+REX-US Ticket Analysis — The crown jewel.
+
+Key design: Playbooks are generated from the SIMILAR INCIDENTS found by
+vector search — not from the entire cluster. This ensures the playbook
+is specific to THIS incident's pattern, not a broad cluster-level summary.
+
+Supports:
+  POST /analyze       - Analyze from JSON (ServiceNow ticket data)
+  POST /analyze/text  - Analyze from plain text description
+  POST /parse-pdf     - Upload PDF → extract JSON
+"""
+
+import os
+import re
+import json
+import asyncio
+import logging
+import tempfile
+from datetime import datetime, date
+from typing import Optional
+
+from pydantic import BaseModel, Field
+from fastapi import APIRouter, UploadFile, File, HTTPException, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from openai import AsyncOpenAI
+
+from backend.api.config import OPENAI_API_KEY
+from backend.api.database import get_pool
+from backend.api.routers.search import embed_text
+from backend.api.utils.pdf_parser import PDFParser
+from backend.api.utils.token_tracker import track_usage
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(tags=["analyze"])
+limiter = Limiter(key_func=get_remote_address)
+
+# ARCH-003: CMDB family mapping at module level — group related systems
+CMDB_FAMILIES: dict[str, list[str]] = {
+    "vision": ["vision manual corrections", "vision missing orders", "vision service now order updates",
+                "vision payments", "vision update after final", "vision"],
+    "hybris": ["hybris", "hybris 1.2", "sap hybris"],
+    "gk_pos": ["gk pos", "gk launchpad", "store point of sale (pos)"],
+    "sap": ["sap oms", "sap fiori", "sap ecc prd rtp", "sap erp central component (ecc)",
+            "sap car", "sap car prd cap/hcp"],
+    "pos_features": ["pos: product browse", "pos: cvm", "pos: payments",
+                     "pos customer service list (csl)", "buy online pickup in store (bopis)"],
+}
+
+
+def get_cmdb_family(cmdb_ci: str) -> str:
+    """Map a CMDB CI string to its system family name."""
+    if not cmdb_ci:
+        return ""
+    lower = cmdb_ci.lower().strip()
+    for family, members in CMDB_FAMILIES.items():
+        if lower in members:
+            return family
+    return lower  # standalone — use as its own family
+
+
+_openai: AsyncOpenAI | None = None
+
+
+def _get_openai():
+    global _openai
+    if _openai is None:
+        _openai = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    return _openai
+
+
+def _json_serial(obj: object) -> str:
+    """Serialize datetime/date objects for JSON encoding."""
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    return str(obj)
+
+
+def clean_for_embedding(text: str) -> str:
+    """Normalize text for embedding — remove order numbers, site codes, etc."""
+    if not text:
+        return ""
+    text = re.sub(r'\b\d{10}\b', '[ORDER]', text)
+    text = re.sub(r'\b[A-Z]{2,3}\s+\d{2}\b', '[SITE]', text)
+    text = re.sub(r'\$\s*[\d,]+\.?\d*', '$[AMOUNT]', text)
+    text = re.sub(r'\bINC\d+\b', '[INC]', text)
+    text = re.sub(r'\bPRB\d+\b', '[PRB]', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def extract_ids_from_text(text: str) -> dict:
+    """Extract order IDs, problem IDs, JIRA tickets from text."""
+    return {
+        "order_ids": list(set(re.findall(r'\b(5\d{9})\b', text))),
+        "problem_ids": list(set(re.findall(r'\b(PRB\d{7})\b', text, re.IGNORECASE))),
+        "jira_tickets": list(set(re.findall(r'\b(OPOS-\d+)\b', text, re.IGNORECASE))),
+        "incident_refs": list(set(re.findall(r'\b(INC\d{7})\b', text, re.IGNORECASE))),
+    }
+
+
+def build_embedding_text(ticket_json: dict) -> tuple[str, str]:
+    """Extract key fields from ServiceNow JSON and build embedding text.
+    v3: Now includes incident_details (IDoc Text, Initial Finding, Error Category).
+    Returns (cleaned_issue, embedding_text)."""
+    pdf_fields = ticket_json.get("pdf_fields", {})
+    incident = ticket_json.get("incident_section", {})
+    resolution = ticket_json.get("resolution_information_section", {})
+    details = ticket_json.get("incident_details", {})
+    notes = ticket_json.get("notes_section", {})
+
+    short_desc = pdf_fields.get("Short description", "") or ticket_json.get("short_description", "")
+    description = pdf_fields.get("Description", "") or ticket_json.get("description", "")
+    category = incident.get("Category", "") or ticket_json.get("category", "")
+    subcategory = incident.get("Subcategory", "") or ticket_json.get("subcategory", "")
+    cmdb_ci = incident.get("Configuration item", "") or ticket_json.get("cmdb_ci", "")
+    close_notes = resolution.get("Close notes", "") or resolution.get("Resolution notes", "") or ticket_json.get("close_notes", "")
+
+    cleaned_issue = clean_for_embedding(short_desc)
+
+    parts = [
+        f"Issue: {cleaned_issue}",
+        f"System: {cmdb_ci} | {category} > {subcategory}" if cmdb_ci or category else "",
+        f"Description: {clean_for_embedding(description)}" if description and len(description) > 10 else "",
+    ]
+
+    # v3: Include IDoc Text, Initial Finding, Error Category from PDF extraction
+    idoc_text = details.get("IDoc Text", "")
+    initial_finding = details.get("Initial Finding", "")
+    error_category = details.get("Error Category", "")
+    pos_event = details.get("POS Event", "")
+
+    detail_parts = []
+    if idoc_text:
+        detail_parts.append(f"IDoc: {idoc_text}")
+    if initial_finding:
+        detail_parts.append(f"Finding: {initial_finding}")
+    if error_category:
+        detail_parts.append(f"Error: {error_category}")
+    if pos_event and len(pos_event) > 2:
+        detail_parts.append(f"POS Event: {pos_event}")
+
+    if detail_parts:
+        parts.append(f"Details: {' | '.join(detail_parts)}")
+
+    # Also extract from additional comments if details not already found
+    comments = notes.get("Additional comments", "")
+    if comments and not idoc_text:
+        m = re.search(r'IDoc\s*Text\s*:\s*(.+?)(?:\n|$)', comments, re.I)
+        if m:
+            parts.append(f"Details: IDoc: {m.group(1).strip()}")
+        m = re.search(r'Initial\s*(?:analysis\s*)?[Ff]inding[s]?\s*:\s*(.+?)(?:\n|$)', comments, re.I)
+        if m and len(m.group(1).strip()) > 3:
+            parts.append(f"Finding: {m.group(1).strip()}")
+
+    if close_notes and len(close_notes) > 10:
+        parts.append(f"Resolution: {clean_for_embedding(close_notes)}")
+
+    embedding_text = "\n".join(p for p in parts if p)
+
+    return cleaned_issue, embedding_text
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Focused playbook generation — from similar incidents, not clusters
+# ═══════════════════════════════════════════════════════════════════
+
+# ── SEC-011: Sanitize text before LLM prompt interpolation ────────
+
+_PROMPT_INJECT_RE = re.compile(
+    r'(ignore\s+(previous|all)\s+instructions?|system\s*prompt|you\s+are\s+now|disregard)',
+    re.IGNORECASE,
+)
+
+_MAX_PROMPT_FIELD_LEN = 500
+
+
+def _sanitize_for_prompt(text: str, max_len: int = _MAX_PROMPT_FIELD_LEN) -> str:
+    """
+    Sanitize user-supplied text before interpolating into LLM prompts.
+    Truncates to max_len and strips common prompt-injection patterns.
+    """
+    if not text:
+        return ""
+    text = str(text)[:max_len]
+    text = _PROMPT_INJECT_RE.sub("[REDACTED]", text)
+    return text
+
+
+# ── CQ-005: Helper functions extracted from _generate_focused_playbook ──
+
+def _build_evidence_lines(incident_details: list[dict]) -> tuple[list[str], dict, list[str], list[str], int]:
+    """
+    Build per-incident evidence blocks and accumulate IDs.
+    Returns (evidence_lines, all_problem_ids, all_order_ids, all_jira, incidents_with_notes).
+    """
+    evidence_lines: list[str] = []
+    all_problem_ids: dict[str, dict] = {}
+    all_order_ids: list[str] = []
+    all_jira: list[str] = []
+    incidents_with_notes = 0
+
+    for inc in incident_details:
+        combined = f"{inc.get('short_description', '')} {inc.get('close_notes', '')} {inc.get('description', '')}"
+        ids = extract_ids_from_text(combined)
+        all_order_ids.extend(ids["order_ids"])
+        all_jira.extend(ids["jira_tickets"])
+
+        sim = inc.get("similarity_score", 0)
+        pid = inc.get("problem_id", "")
+        inc_cmdb = inc.get("cmdb_ci", "") or ""
+        if pid:
+            if pid not in all_problem_ids:
+                all_problem_ids[pid] = {"count": 0, "total_sim": 0.0, "cmdb_cis": []}
+            all_problem_ids[pid]["count"] += 1
+            all_problem_ids[pid]["total_sim"] += sim
+            if inc_cmdb:
+                all_problem_ids[pid]["cmdb_cis"].append(inc_cmdb)
+
+        if inc.get("close_notes") and len(inc["close_notes"].strip()) > 5:
+            incidents_with_notes += 1
+            order_str = ", ".join(ids["order_ids"]) if ids["order_ids"] else "N/A"
+            problem_str = pid or "N/A"
+            block = (
+                f"--- {inc['incident_number']} | {inc.get('opened_at', 'N/A')} | "
+                f"Similarity: {inc.get('similarity_score', 0):.1%} | "
+                f"Order(s): {order_str} | Problem: {problem_str}"
+            )
+            block += f"\nTitle: {inc['short_description']}"
+            block += f"\nSystem: {inc.get('cmdb_ci', 'N/A')} | Group: {inc.get('assignment_group', 'N/A')}"
+            block += f"\nClose Notes: {inc['close_notes'].strip()}"
+            if inc.get("description"):
+                block += f"\nDescription excerpt: {inc['description'][:200]}"
+            evidence_lines.append(block)
+
+    return evidence_lines, all_problem_ids, all_order_ids, all_jira, incidents_with_notes
+
+
+def _score_problems(
+    all_problem_ids: dict,
+    problem_states: dict,
+    incoming_cmdb: str,
+) -> list[dict]:
+    """
+    Score each problem group by CMDB family match, similarity, frequency, and open state.
+    Returns sorted list of scored problem dicts.
+    """
+    incoming_family = get_cmdb_family(incoming_cmdb)
+    total_results = sum(p["count"] for p in all_problem_ids.values()) or 1
+    scored_problems = []
+
+    for pid, info in all_problem_ids.items():
+        cmdb_list = info.get("cmdb_cis", [])
+        dominant_cmdb = max(set(cmdb_list), key=cmdb_list.count) if cmdb_list else ""
+        problem_family = get_cmdb_family(dominant_cmdb)
+
+        cmdb_match = 0.0
+        if incoming_family and problem_family:
+            if incoming_family == problem_family:
+                cmdb_match = 1.0
+            elif incoming_cmdb and dominant_cmdb and incoming_cmdb.lower() == dominant_cmdb.lower():
+                cmdb_match = 1.0
+
+        avg_sim = info["total_sim"] / info["count"] if info["count"] > 0 else 0
+        result_ratio = info["count"] / total_results
+        state = problem_states.get(pid, "Unknown")
+        is_open = state in ("Open", "New")
+
+        score = (
+            (0.35 * cmdb_match)
+            + (0.30 * avg_sim)
+            + (0.10 * result_ratio)
+            + (0.05 * (1.0 if info["count"] >= 3 else 0.5))
+            + (0.20 * (1.0 if is_open else 0.0))
+        )
+        scored_problems.append({
+            "id": pid,
+            "count": info["count"],
+            "avg_sim": round(avg_sim, 4),
+            "cmdb_match": round(cmdb_match, 2),
+            "dominant_cmdb": dominant_cmdb,
+            "cmdb_family": problem_family,
+            "score": round(score, 4),
+            "state": state,
+            "is_open": is_open,
+        })
+
+    scored_problems.sort(key=lambda x: (-x["is_open"], -x["score"]))
+    return scored_problems
+
+
+def _build_playbook_prompts(
+    cleaned_issue: str,
+    cluster_name: str,
+    cluster_count: int,
+    incidents_with_notes: int,
+    evidence_text: str,
+    top_problem: Optional[dict],
+) -> tuple[str, str, str]:
+    """
+    Build (playbook_prompt, notes_prompt, system_prompt) for LLM generation.
+    User-supplied fields are sanitized before interpolation (SEC-011).
+    """
+    safe_issue = _sanitize_for_prompt(cleaned_issue)
+    safe_cluster = _sanitize_for_prompt(cluster_name, max_len=200)
+
+    tag_line = (
+        f"Recommended: {top_problem['id']} ({top_problem['count']} similar incidents, "
+        f"score={top_problem['score']})"
+        if top_problem
+        else "No existing problem matches — consider creating new."
+    )
+
+    playbook_prompt = f"""You are writing a CONCISE PLAYBOOK for a Discount Tire support engineer who just received this incident.
+
+INCIDENT: {safe_issue}
+PATTERN: {safe_cluster} ({cluster_count} total incidents in this pattern)
+BASED ON: {incidents_with_notes} similar resolved incidents
+
+EVIDENCE FROM SIMILAR INCIDENTS:
+{evidence_text[:3000]}
+
+Write a SHORT, actionable playbook (max 400 words). Use this EXACT format:
+
+## Playbook: {safe_cluster}
+
+**Pattern:** 1-2 sentence description of what this issue type is, based on evidence.
+
+**Most Likely Fix:** The #1 resolution that worked (with count). Cite [INC#].
+
+**Step-by-Step:**
+1. First step (from evidence)
+2. Second step
+3. etc.
+
+**If That Doesn't Work:** Alternative approaches from evidence, cite [INC#].
+
+**Escalate To:** Which team/person, cite which incidents triggered escalation.
+
+**Tag Problem:** {tag_line}
+
+RULES: Only use facts from the evidence. Cite [INC#] for every claim. Be brief."""
+
+    notes_prompt = f"""Create detailed resolution notes from these similar incidents.
+
+INCIDENT: {safe_issue}
+SIMILAR INCIDENTS: {incidents_with_notes} with resolution data
+
+{evidence_text}
+
+Format as:
+
+## Resolution Notes
+
+### What the Team DID
+Group by technique, cite [INC#] + Order ID for each:
+1. **Action** (count) — [INC#] — Order: X
+
+### What the Team REQUESTED
+Escalations, problem tickets, JIRA tickets — cite source incident.
+
+### Incident Reference
+| # | Date | Order | Sim% | Problem | Summary |
+(All incidents, sorted by similarity)
+
+RULES: Zero hallucination. Every fact cites an incident number."""
+
+    system_prompt = """You are a technical writer for Discount Tire support engineers.
+ABSOLUTE RULES:
+1. ONLY write what appears in the evidence. Do NOT invent.
+2. Every step MUST cite [INC#].
+3. Use exact technical terms (WE19, poslog, IDoc, APCR, finalize).
+4. Be concise — engineers scan, not read."""
+
+    return playbook_prompt, notes_prompt, system_prompt
+
+
+async def _generate_focused_playbook(
+    cleaned_issue: str,
+    incident_details: list[dict],
+    incoming_cmdb: str,
+    cluster_info: dict | None,
+    pool=None,
+) -> dict:
+    """
+    Generate a playbook from the SPECIFIC similar incidents found by vector search.
+    Not from the whole cluster — only from what's actually relevant to THIS ticket.
+    """
+    if not incident_details:
+        return {"content": "", "grounding_score": 0}
+
+    # CQ-005: Use extracted helpers for evidence building and problem scoring
+    evidence_lines, all_problem_ids, all_order_ids, all_jira, incidents_with_notes = (
+        _build_evidence_lines(incident_details)
+    )
+
+    # ARCH-001 FIX: Batch fetch problem states in a single SELECT
+    problem_states: dict[str, str] = {}
+    if all_problem_ids:
+        try:
+            async with pool.acquire() as pconn:
+                rows = await pconn.fetch(
+                    "SELECT problem_id, state_display FROM rexus_problems WHERE problem_id = ANY($1)",
+                    list(all_problem_ids.keys()),
+                )
+                problem_states = {r["problem_id"]: r["state_display"] for r in rows}
+        except Exception as e:
+            logger.warning(f"Failed to fetch problem states: {e}")
+
+    # CQ-005: Use extracted helper for problem scoring (uses module-level CMDB_FAMILIES)
+    scored_problems = _score_problems(all_problem_ids, problem_states, incoming_cmdb)
+
+    top_problem = scored_problems[0] if scored_problems else None
+    secondary_problem = scored_problems[1] if len(scored_problems) > 1 else None
+    remaining_problems = [p["id"] for p in scored_problems[2:]]
+
+    evidence_text = "\n\n".join(evidence_lines)
+    unique_orders = list(set(all_order_ids))
+    unique_jira = list(set(all_jira))
+
+    cluster_name = cluster_info["cluster_name"] if cluster_info else "Unknown Pattern"
+    cluster_count = cluster_info.get("incident_count", 0) if cluster_info else 0
+
+    # CQ-005: Use extracted helper to build prompts (SEC-011: sanitizes user data)
+    playbook_prompt, notes_prompt, system_prompt = _build_playbook_prompts(
+        cleaned_issue, cluster_name, cluster_count,
+        incidents_with_notes, evidence_text, top_problem,
+    )
+
+    client = _get_openai()
+
+    # Generate both prompts in parallel
+    playbook_coro = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": playbook_prompt}],
+        temperature=0.1, max_tokens=1500,
+    )
+    notes_coro = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": notes_prompt}],
+        temperature=0.1, max_tokens=3000,
+    )
+    playbook_resp, notes_resp = await asyncio.gather(playbook_coro, notes_coro)
+
+    playbook_content = playbook_resp.choices[0].message.content or ""
+    notes_content = notes_resp.choices[0].message.content or ""
+
+    # Track completion token usage
+    if pool:
+        pb_usage = playbook_resp.usage
+        nt_usage = notes_resp.usage
+        await track_usage(pool, "completion", "gpt-4o",
+                          pb_usage.prompt_tokens, pb_usage.completion_tokens,
+                          endpoint="/analyze-playbook")
+        await track_usage(pool, "completion", "gpt-4o",
+                          nt_usage.prompt_tokens, nt_usage.completion_tokens,
+                          endpoint="/analyze-notes")
+
+    if incidents_with_notes >= 8:
+        grounding = 0.95
+    elif incidents_with_notes >= 4:
+        grounding = 0.85
+    elif incidents_with_notes >= 2:
+        grounding = 0.7
+    else:
+        grounding = 0.4
+
+    return {
+        "playbook": playbook_content,
+        "notes": notes_content,
+        "grounding_score": grounding,
+        "source_incident_count": incidents_with_notes,
+        "total_similar": len(incident_details),
+        "top_problem": top_problem,
+        "secondary_problem": secondary_problem,
+        "other_problems": remaining_problems,
+        "order_ids": unique_orders[:20],
+        "jira_tickets": unique_jira,
+    }
+
+
+# ── POST /analyze — from ServiceNow JSON ──────────────────────────
+
+class AnalyzeRequest(BaseModel):
+    ticket_json: dict
+    limit: int = Field(15, ge=1, le=50)
+    threshold: float = Field(0.40, ge=0.0, le=1.0)
+
+
+# ENH-003: Pydantic response model for /analyze endpoint
+class ProblemInfo(BaseModel):
+    id: str
+    count: int
+    score: float
+    is_open: bool
+
+
+class FocusedPlaybookResult(BaseModel):
+    playbook: str = ""
+    notes: str = ""
+    grounding_score: float = 0.0
+    source_incident_count: int = 0
+    total_similar: int = 0
+    top_problem: Optional[ProblemInfo] = None
+    secondary_problem: Optional[ProblemInfo] = None
+    other_problems: list[str] = []
+    order_ids: list[str] = []
+    jira_tickets: list[str] = []
+
+
+class AnalyzeResponse(BaseModel):
+    analysis_id: Optional[int] = None
+    cleaned_issue: str
+    confidence_score: float
+    incident_exists: bool
+    incident_number: Optional[str] = None
+    match_count: int
+    similar_incidents: list[dict]
+    dominant_cluster: Optional[dict] = None
+    focused_playbook: dict
+    resolution_patterns: list[dict]
+
+
+@router.post("/analyze", response_model=AnalyzeResponse)
+@limiter.limit(os.getenv("RATE_LIMIT_ANALYZE", "20/minute"))
+async def analyze_ticket(request: Request, req: AnalyzeRequest):
+    cleaned_issue, embedding_text = build_embedding_text(req.ticket_json)
+    if not embedding_text.strip():
+        raise HTTPException(400, "No usable text found in ticket JSON")
+
+    # Check if this incident already exists
+    incident_section = req.ticket_json.get("incident_section", {})
+    incident_number = incident_section.get("Number", "") or req.ticket_json.get("incident_number", "")
+
+    embedding = await embed_text(embedding_text)
+    embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+
+    pool = await get_pool()
+
+    # Track embedding token usage (~1 token per 4 chars)
+    embed_tokens = len(embedding_text) // 4
+    await track_usage(pool, "embedding", "text-embedding-3-small", embed_tokens, 0,
+                      endpoint="/analyze", incident_number=incident_number)
+    async with pool.acquire() as conn:
+        # Check existence
+        incident_exists = False
+        if incident_number:
+            existing = await conn.fetchval(
+                "SELECT id FROM rexus_incidents_v3 WHERE incident_number = $1", incident_number
+            )
+            incident_exists = existing is not None
+
+        # Hybrid search: vector + keyword on v3 table
+        raw_query = req.ticket_json.get("pdf_fields", {}).get("Short description", "") or ""
+
+        # Vector search on v3
+        vector_results = await conn.fetch(
+            """SELECT id as incident_id, incident_number, short_description, close_notes,
+                      (1 - (embedding <=> $1::vector))::float AS similarity_score,
+                      NULL::int as cluster_id
+               FROM rexus_incidents_v3
+               WHERE embedding IS NOT NULL
+                 AND (split_group = 'training' OR split_group = 'analyzed')
+                 AND 1 - (embedding <=> $1::vector) >= $2
+               ORDER BY embedding <=> $1::vector
+               LIMIT $3""",
+            embedding_str, req.threshold - 0.05, req.limit,
+        )
+
+        # Keyword search on v3 (trigram)
+        keyword_results = []
+        if raw_query and len(raw_query) > 5:
+            keyword_results = await conn.fetch(
+                """SELECT id as incident_id, incident_number, short_description, close_notes,
+                          similarity(short_description, $1)::float AS similarity_score,
+                          NULL::int as cluster_id
+                   FROM rexus_incidents_v3
+                   WHERE (split_group = 'training' OR split_group = 'analyzed')
+                     AND short_description % $1
+                   ORDER BY similarity(short_description, $1) DESC
+                   LIMIT $2""",
+                raw_query, req.limit,
+            )
+
+        # Merge: MAX(vector, keyword) + agreement bonus
+        merged: dict[int, dict] = {}
+        for r in vector_results:
+            merged[r["incident_id"]] = {**dict(r), "vec": r["similarity_score"], "kw": 0.0}
+        for r in keyword_results:
+            iid = r["incident_id"]
+            if iid in merged:
+                merged[iid]["kw"] = r["similarity_score"]
+            else:
+                merged[iid] = {**dict(r), "vec": 0.0, "kw": r["similarity_score"]}
+
+        # Calculate hybrid score
+        for iid, m in merged.items():
+            base = max(m["vec"], m["kw"])
+            bonus = min(m["vec"], m["kw"]) * 0.05 if m["vec"] > 0.4 and m["kw"] > 0.3 else 0
+            m["similarity_score"] = base + bonus
+
+        # Sort by hybrid score and take top N
+        similar = sorted(merged.values(), key=lambda x: -x["similarity_score"])[:req.limit]
+
+        # Determine dominant cluster
+        cluster_ids = [r["cluster_id"] for r in similar if r["cluster_id"]]
+        dominant_cluster_id = max(set(cluster_ids), key=cluster_ids.count) if cluster_ids else None
+
+        # Confidence = top match similarity
+        confidence_score = similar[0]["similarity_score"] if similar else 0.0
+
+        # Cluster info
+        cluster_info = None
+        if dominant_cluster_id:
+            cluster_info = await conn.fetchrow(
+                """SELECT id, cluster_name, cluster_description, incident_count,
+                          dominant_category, avg_resolution_hours, avg_internal_similarity
+                   FROM rexus_clusters WHERE id = $1""",
+                dominant_cluster_id,
+            )
+
+        # ARCH-001 FIX: Batch fetch ALL incident details in a single SELECT instead of N+1
+        similar_ids = [r["incident_id"] for r in similar]
+        if similar_ids:
+            detail_rows = await conn.fetch(
+                """SELECT id, incident_number, short_description, description, category,
+                          subcategory, priority, state, cmdb_ci, assignment_group,
+                          close_notes, close_code, opened_at, resolved_at, closed_at,
+                          business_duration, problem_id, u_jira_number, u_order_number,
+                          work_notes
+                   FROM rexus_incidents_v3
+                   WHERE id = ANY($1)""",
+                similar_ids,
+            )
+        else:
+            detail_rows = []
+
+        # Build id → detail map, preserving similarity scores from search results
+        detail_map = {row["id"]: dict(row) for row in detail_rows}
+        incident_details = []
+        for r in similar:
+            detail = detail_map.get(r["incident_id"])
+            if detail:
+                detail["similarity_score"] = r["similarity_score"]
+                detail["cluster_id"] = r["cluster_id"]
+                incident_details.append(detail)
+
+        # Resolution patterns from top matches
+        resolutions = []
+        for r in similar:
+            if r["close_notes"] and len(r["close_notes"].strip()) > 5:
+                resolutions.append({
+                    "incident_number": r["incident_number"],
+                    "close_notes": r["close_notes"],
+                    "similarity": round(r["similarity_score"], 4),
+                })
+
+    # Generate FOCUSED playbook from similar incidents (not cluster)
+    incoming_cmdb = (
+        req.ticket_json.get("incident_section", {}).get("Configuration item", "")
+        or req.ticket_json.get("cmdb_ci", "")
+        or ""
+    )
+    focused_playbook = await _generate_focused_playbook(
+        cleaned_issue, incident_details, incoming_cmdb, dict(cluster_info) if cluster_info else None, pool
+    )
+
+    # SEC-003 FIX: Don't expose embedding_text (contains sensitive concatenated data)
+    # SEC-014 FIX: Strip work_notes from similar_incidents response (PII) — already handled in incidents.py
+    safe_incidents = []
+    for inc in incident_details[:10]:
+        safe = {k: v for k, v in inc.items() if k not in ("work_notes", "embedding_text")}
+        safe_incidents.append(safe)
+
+    result: dict = {
+        "cleaned_issue": cleaned_issue,
+        "confidence_score": round(confidence_score, 4),
+        "incident_exists": incident_exists,
+        "incident_number": incident_number or None,
+        "match_count": len(similar),
+        "similar_incidents": safe_incidents,
+        "dominant_cluster": dict(cluster_info) if cluster_info else None,
+        "focused_playbook": focused_playbook,
+        "resolution_patterns": resolutions[:5],
+    }
+
+    similar_summary = [
+        {"incident_number": d["incident_number"], "similarity_score": d["similarity_score"],
+         "short_description": d["short_description"], "close_notes": d.get("close_notes", "")[:300]}
+        for d in incident_details[:10]
+    ]
+
+    # Save to analysis log for review
+    async with pool.acquire() as conn:
+        log_id = await conn.fetchval(
+            """INSERT INTO rexus_analysis_log
+               (incident_number, input_json, cleaned_issue, confidence_score,
+                match_count, dominant_cluster_id, dominant_cluster_name,
+                focused_playbook_content, focused_playbook_grounding,
+                top_problem_id, similar_incidents, full_response)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+               RETURNING id""",
+            incident_number or None,
+            json.dumps(req.ticket_json, default=_json_serial),
+            cleaned_issue,
+            confidence_score,
+            len(similar),
+            dominant_cluster_id,
+            cluster_info["cluster_name"] if cluster_info else None,
+            focused_playbook.get("playbook", ""),
+            focused_playbook.get("grounding_score", 0),
+            focused_playbook.get("top_problem", {}).get("id") if focused_playbook.get("top_problem") else None,
+            json.dumps(similar_summary, default=_json_serial),
+            json.dumps(result, default=_json_serial),
+        )
+
+    result["analysis_id"] = log_id
+
+    # Progressive learning: add this incident to the knowledge base
+    # so future queries benefit from it (only if it doesn't already exist).
+    # ARCH-014: Table rexus_incidents_v3 confirmed correct for progressive inserts.
+    if not incident_exists and incident_number and confidence_score > 0:
+        try:
+            pdf_fields = req.ticket_json.get("pdf_fields", {})
+            inc_section = req.ticket_json.get("incident_section", {})
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """INSERT INTO rexus_incidents_v3
+                       (incident_number, short_description, description,
+                        category, subcategory, priority, cmdb_ci, assignment_group,
+                        caller_id, location, opened_at,
+                        split_group, embedding_text, embedding)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'analyzed', $12, $13)
+                       ON CONFLICT (incident_number) DO NOTHING""",
+                    incident_number,
+                    pdf_fields.get("Short description", ""),
+                    pdf_fields.get("Description", ""),
+                    inc_section.get("Category", ""),
+                    inc_section.get("Subcategory", ""),
+                    inc_section.get("Priority", ""),
+                    inc_section.get("Configuration item", ""),
+                    inc_section.get("Assignment group", ""),
+                    inc_section.get("Caller", ""),
+                    inc_section.get("Location", ""),
+                    None,  # opened_at — parse if available
+                    embedding_text,
+                    embedding,
+                )
+        except Exception as e:
+            logger.warning(f"Progressive learning failed for {incident_number}: {e}")
+
+    return result
+
+
+# ── POST /analyze/text — from plain text ──────────────────────────
+
+class AnalyzeTextRequest(BaseModel):
+    text: str = Field(..., min_length=3, max_length=5000)
+    limit: int = Field(15, ge=1, le=50)
+    threshold: float = Field(0.40, ge=0.0, le=1.0)
+
+
+@router.post("/analyze/text", response_model=AnalyzeResponse)
+@limiter.limit(os.getenv("RATE_LIMIT_ANALYZE", "20/minute"))
+async def analyze_text(request: Request, req: AnalyzeTextRequest):
+    """
+    Analyze from plain text (wraps into ticket_json format).
+    ENH-015: This is an intentional convenience wrapper — it normalises the plain-text
+    input into the same ticket_json shape that analyze_ticket expects.
+    """
+    ticket_json = {
+        "pdf_fields": {"Short description": req.text, "Description": ""},
+        "incident_section": {},
+        "resolution_information_section": {},
+    }
+    wrapped_req = AnalyzeRequest(ticket_json=ticket_json, limit=req.limit, threshold=req.threshold)
+    return await analyze_ticket(request, wrapped_req)
+
+
+# ── ServiceNow incident fetch + analyze ──────────────────────────
+
+def _build_ticket_json_from_sn(data: dict, incident_number: str) -> dict:
+    """Convert ServiceNow detailed API response to ticket_json format."""
+    inc = data.get("incident", {})
+    res = data.get("resolution", {})
+    notes = data.get("notes", {})
+    order = data.get("order_data", {})
+    contact = data.get("contact", {})
+
+    comments_list = notes.get("comments", [])
+    comments_text = ""
+    if isinstance(comments_list, list):
+        comments_text = "\n".join(c.get("value", "") for c in comments_list)
+
+    wn_list = notes.get("work_notes", [])
+    first_work_note = ""
+    if isinstance(wn_list, list):
+        for note in reversed(wn_list):
+            val = note.get("value", "")
+            if len(val) > 50:
+                first_work_note = val[:300]
+                break
+
+    return {
+        "pdf_fields": {
+            "Short description": inc.get("short_description", ""),
+            "Description": inc.get("description", ""),
+        },
+        "incident_section": {
+            "Number": inc.get("number", incident_number),
+            "Category": inc.get("category", ""),
+            "Subcategory": inc.get("subcategory", ""),
+            "Priority": inc.get("priority_display", ""),
+            "Configuration item": inc.get("cmdb_ci_display", ""),
+            "Assignment group": inc.get("assignment_group_display", ""),
+            "Caller": contact.get("caller_id_display", ""),
+            "Location": inc.get("location_display", ""),
+            "Impact": inc.get("impact_display", ""),
+            "Urgency": inc.get("urgency_display", ""),
+        },
+        "incident_details": {
+            "Error Category": order.get("u_error_category", ""),
+            "IDoc Text": "",
+        },
+        "notes_section": {
+            "Additional comments": comments_text,
+            "First work note": first_work_note,
+        },
+        "resolution_information_section": {
+            "Close notes": res.get("close_notes", ""),
+            "Close code": res.get("close_code_display", ""),
+        },
+    }
+
+
+@router.get("/fetch-incident/{incident_number}")
+@limiter.limit(os.getenv("RATE_LIMIT_ANALYZE", "20/minute"))
+async def fetch_from_servicenow(request: Request, incident_number: str):
+    """
+    Fetch an incident from ServiceNow and return the ticket_json
+    without running analysis. Lets the user preview before analyzing.
+    """
+    if not re.match(r'^INC\d+$', incident_number):
+        raise HTTPException(400, "Invalid incident number format. Must be INC followed by digits.")
+
+    from backend.services.servicenow_client import ServiceNowClient
+    try:
+        sn_client = ServiceNowClient()
+    except ValueError:
+        raise HTTPException(503, "ServiceNow credentials not configured")
+
+    data = await asyncio.to_thread(sn_client.get_incident_detailed, incident_number)
+    if not data:
+        raise HTTPException(404, f"Incident {incident_number} not found in ServiceNow")
+
+    return _build_ticket_json_from_sn(data, incident_number)
+
+
+@router.post("/analyze/incident/{incident_number}", response_model=AnalyzeResponse)
+@limiter.limit(os.getenv("RATE_LIMIT_ANALYZE", "20/minute"))
+async def analyze_from_servicenow(request: Request, incident_number: str,
+                                   limit: int = 15, threshold: float = 0.40):
+    """
+    Fetch an incident directly from ServiceNow by INC number,
+    convert to ticket_json format, and run the full analysis.
+    """
+    if not re.match(r'^INC\d+$', incident_number):
+        raise HTTPException(400, "Invalid incident number format. Must be INC followed by digits.")
+
+    from backend.services.servicenow_client import ServiceNowClient
+    try:
+        sn_client = ServiceNowClient()
+    except ValueError:
+        raise HTTPException(503, "ServiceNow credentials not configured")
+
+    data = await asyncio.to_thread(sn_client.get_incident_detailed, incident_number)
+    if not data:
+        raise HTTPException(404, f"Incident {incident_number} not found in ServiceNow")
+
+    ticket_json = _build_ticket_json_from_sn(data, incident_number)
+    wrapped_req = AnalyzeRequest(ticket_json=ticket_json, limit=limit, threshold=threshold)
+    return await analyze_ticket(request, wrapped_req)
+
+
+# ── POST /parse-pdf — upload PDF, return JSON ─────────────────────
+
+# SEC-005 FIX: PDF upload with validation
+MAX_PDF_SIZE = 10 * 1024 * 1024  # 10MB
+
+@router.post("/parse-pdf")
+async def parse_pdf(file: UploadFile = File(...)):
+    """Upload a ServiceNow incident PDF and return extracted JSON."""
+    # Validate extension
+    if not file.filename or not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(400, "File must be a PDF")
+
+    # Validate content type
+    if file.content_type and file.content_type != "application/pdf":
+        raise HTTPException(400, f"Invalid content type: {file.content_type}. Expected application/pdf")
+
+    # Read with size limit
+    content = await file.read()
+    if len(content) > MAX_PDF_SIZE:
+        raise HTTPException(400, f"File too large ({len(content)} bytes). Maximum is {MAX_PDF_SIZE} bytes")
+    if len(content) < 100:
+        raise HTTPException(400, "File too small to be a valid PDF")
+
+    # Validate PDF magic bytes
+    if not content[:5] == b'%PDF-':
+        raise HTTPException(400, "File does not appear to be a valid PDF")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        parser = PDFParser(tmp_path)
+        return parser.extract()
+    finally:
+        os.remove(tmp_path)

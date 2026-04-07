@@ -1,0 +1,9 @@
+# REX-US Integration Test Dependencies
+# Run against a live backend at http://localhost:8000
+
+pytest==8.3.4
+pytest-asyncio==0.24.0
+httpx==0.28.1
+
+# Nice-to-have: detailed diff output on assertion failures
+pytest-icdiff==0.9

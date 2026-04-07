@@ -1,0 +1,653 @@
+{
+  "reviews": [
+    {
+      "type": "architecture",
+      "findings": [
+        {
+          "id": "ARCH-001",
+          "severity": "HIGH",
+          "category": "Scalability",
+          "file": "backend/api/routers/analyze.py",
+          "line": 486,
+          "description": "N+1 query pattern: individual SELECT per similar incident inside the async context. For each of `req.limit` (default 15) similar incidents, a separate DB round-trip is issued to fetch full incident details. Under load this compounds latency significantly.",
+          "recommendation": "Collect all incident IDs first, then fetch in a single query using `WHERE id = ANY($1::int[])`, then remap by ID."
+        },
+        {
+          "id": "ARCH-002",
+          "severity": "HIGH",
+          "category": "Scalability",
+          "file": "backend/api/routers/analyze.py",
+          "line": 344,
+          "description": "Two sequential OpenAI gpt-4o calls (playbook + notes) are made synchronously inside the request handler. Combined latency can exceed 10-15 seconds under typical load. The comment in the code itself notes this ('can optimize later').",
+          "recommendation": "Run both calls concurrently with `asyncio.gather(playbook_call, notes_call)`. This alone can halve wall-clock latency for the `/analyze` endpoint."
+        },
+        {
+          "id": "ARCH-003",
+          "severity": "HIGH",
+          "category": "Separation of Concerns",
+          "file": "backend/api/routers/analyze.py",
+          "line": 204,
+          "description": "A hardcoded CMDB family mapping dictionary (`CMDB_FAMILIES`) is embedded directly inside a business logic function `_generate_focused_playbook`. This is domain configuration that will require code changes for every new system onboarded and cannot be managed without a deployment.",
+          "recommendation": "Extract CMDB families to a config table in the database or to `config.py`, enabling runtime updates without code changes."
+        },
+        {
+          "id": "ARCH-004",
+          "severity": "HIGH",
+          "category": "Design Pattern",
+          "file": "backend/api/routers/clusters.py",
+          "line": 22,
+          "description": "The `sort_by` parameter is validated via a regex pattern on the query parameter, which is good, but the validated value is still interpolated directly into an f-string SQL query (`ORDER BY {sort_by} DESC`). While the regex prevents injection in this specific case, this pattern is fragile — a future maintainer may loosen the regex or copy the pattern without the regex, opening a SQL injection path.",
+          "recommendation": "Use an explicit allowlist dictionary mapping parameter values to safe SQL column names: `SORT_COLUMNS = {'incident_count': 'incident_count', ...}` and use `SORT_COLUMNS[sort_by]` in the query."
+        },
+        {
+          "id": "ARCH-005",
+          "severity": "MEDIUM",
+          "category": "Separation of Concerns",
+          "file": "backend/api/routers/sync.py",
+          "line": 53,
+          "description": "Text cleaning logic (`_clean_for_embedding`) is duplicated across at least four locations: `analyze.py`, `sync.py`, `scripts/ingest_servicenow.py`, and `scripts/ab_compare.py`. Each copy has slightly different regex patterns, creating inconsistent embedding behavior across the pipeline.",
+          "recommendation": "Extract a single canonical `clean_for_embedding(text: str) -> str` function into a shared `backend/api/utils/text_utils.py` module and import it everywhere."
+        },
+        {
+          "id": "ARCH-006",
+          "severity": "MEDIUM",
+          "category": "Separation of Concerns",
+          "file": "backend/api/routers/analyze.py",
+          "line": 532,
+          "description": "Import statements (`import json`, `from datetime import datetime, date`) appear inside function bodies rather than at module level. This is a Python anti-pattern that slightly slows the first call and obscures the module's dependencies.",
+          "recommendation": "Move all imports to the top of the file."
+        },
+        {
+          "id": "ARCH-007",
+          "severity": "MEDIUM",
+          "category": "Design Pattern",
+          "file": "backend/api/routers/search.py",
+          "line": 10,
+          "description": "Both `search.py` and `analyze.py` maintain their own module-level singleton OpenAI client (`_openai_client`) using the same lazy-init pattern. This duplicates connection management logic.",
+          "recommendation": "Create a single `backend/api/utils/openai_client.py` that returns a shared singleton, following the same pattern as `database.py`."
+        },
+        {
+          "id": "ARCH-008",
+          "severity": "MEDIUM",
+          "category": "Integration Points",
+          "file": "backend/api/routers/sync.py",
+          "line": 39,
+          "description": "The sync import endpoint (`/sync/import`) uses a synchronous `OpenAI` client (`from openai import OpenAI`) while the rest of the API uses `AsyncOpenAI`. Calling a synchronous blocking HTTP client from within an async FastAPI request handler will block the event loop for each embedding generation call.",
+          "recommendation": "Replace with `AsyncOpenAI` and `await openai.embeddings.create(...)` to avoid blocking the event loop during sync operations."
+        },
+        {
+          "id": "ARCH-009",
+          "severity": "MEDIUM",
+          "category": "Scalability",
+          "file": "backend/api/routers/sync.py",
+          "line": 337,
+          "description": "The `/sync/import` endpoint processes up to 50 incidents sequentially in a for loop, including one synchronous OpenAI API call per incident. This can take several minutes and will hold an HTTP connection open for the entire duration with no progress feedback.",
+          "recommendation": "Implement a background task pattern using FastAPI's `BackgroundTasks` or a task queue (Celery/ARQ). Return a job ID immediately and let the client poll for status."
+        },
+        {
+          "id": "ARCH-010",
+          "severity": "MEDIUM",
+          "category": "Design Pattern",
+          "file": "backend/api/database.py",
+          "line": 9,
+          "description": "The `_parse_dsn()` function works around the URL parsing by replacing `postgresql://` with `http://` to allow `urlparse` to recognize the netloc. This is fragile and will silently break if the scheme differs (e.g., `postgres://`). The `asyncpg` library natively accepts DSN strings.",
+          "recommendation": "Use `asyncpg.create_pool(dsn=DATABASE_URL)` directly, or at minimum replace the hack with a proper URL parsing library like `urllib.parse` configured to handle the postgresql scheme."
+        },
+        {
+          "id": "ARCH-011",
+          "severity": "MEDIUM",
+          "category": "Scalability",
+          "file": "backend/api/routers/analytics.py",
+          "line": 8,
+          "description": "The `/analytics` endpoint executes 8 separate sequential SQL queries in a single request with no caching. For large datasets these aggregation queries can be slow and expensive, and every dashboard page load repeats them.",
+          "recommendation": "Execute the queries concurrently using `asyncio.gather()`, and add a short-lived cache (e.g., 60-second TTL with `aiocache` or a simple `asyncio.Lock`-guarded dict) to avoid redundant aggregation on every page load."
+        },
+        {
+          "id": "ARCH-012",
+          "severity": "MEDIUM",
+          "category": "Design Pattern",
+          "file": "backend/api/routers/wave_test.py",
+          "line": 73,
+          "description": "The wave parameter in the URL path (`/waves/{wave}/test/{incident_number}`) is user-controlled and passed directly to a SQL `WHERE split_group = $2` clause. While parameterized queries prevent injection, there is no validation that `wave` matches expected values (e.g., `wave_1`, `training`). An attacker can enumerate any `split_group` value.",
+          "recommendation": "Add a Query or Path validation constraint: query the available wave names at startup or validate against a known pattern before executing the database query."
+        },
+        {
+          "id": "ARCH-013",
+          "severity": "LOW",
+          "category": "Design Pattern",
+          "file": "backend/api/main.py",
+          "line": 24,
+          "description": "FastAPI is configured without any rate limiting middleware. The analyze endpoint makes two gpt-4o calls per request — a trivial script could run up significant OpenAI costs or degrade service for legitimate users.",
+          "recommendation": "Add rate limiting middleware (e.g., `slowapi` for FastAPI) on the `/analyze`, `/analyze/text`, and `/parse-pdf` endpoints at minimum."
+        },
+        {
+          "id": "ARCH-014",
+          "severity": "LOW",
+          "category": "Observability",
+          "file": "backend/api/routers/analyze.py",
+          "line": 600,
+          "description": "The progressive learning insertion (`INSERT INTO rexus_incidents_v3`) silently swallows all exceptions with a bare `except Exception: pass`. Failures here are invisible — incidents are not added to the knowledge base, which degrades future analysis quality over time.",
+          "recommendation": "At minimum log the exception: `except Exception as e: logger.warning('Progressive learning failed for %s: %s', incident_number, e)`."
+        },
+        {
+          "id": "ARCH-015",
+          "severity": "LOW",
+          "category": "Observability",
+          "file": "backend/api/routers/health.py",
+          "line": 7,
+          "description": "The health endpoint executes a `COUNT(*)` query against the full incidents table on every call. Kubernetes/load balancer health checks that call this endpoint frequently will cause unnecessary DB load.",
+          "recommendation": "Use a lightweight liveness check (`SELECT 1`) for the health probe, and expose a separate `/health/ready` or `/metrics` endpoint for the count statistics."
+        }
+      ]
+    },
+    {
+      "type": "security",
+      "findings": [
+        {
+          "id": "SEC-001",
+          "severity": "CRITICAL",
+          "category": "Authentication",
+          "file": "backend/api/main.py",
+          "line": 24,
+          "description": "The entire API has zero authentication or authorization. All endpoints — including `/sync/import` (which can trigger bulk ServiceNow data imports and OpenAI billing), `/analyze` (which queries a production ServiceNow instance and logs all inputs to the database), and `/feedback` (which writes arbitrary text to the database) — are accessible to any unauthenticated caller. For an enterprise deployment, this is the most critical security gap.",
+          "recommendation": "Implement API key authentication or OAuth2 (Bearer token) using FastAPI's `Security` dependency. Add an `X-API-Key` header check or JWT validation as a FastAPI dependency injected into all router functions. Consider using `fastapi-users` or `python-jose` for JWT handling."
+        },
+        {
+          "id": "SEC-002",
+          "severity": "CRITICAL",
+          "category": "Secrets Management",
+          "file": "backend/api/config.py",
+          "line": 10,
+          "description": "The `DATABASE_URL` has a hardcoded default value (`postgresql://rexus:rexus_local@localhost:5434/rexus`) including plaintext credentials. If the `.env` file is missing in any deployment environment, the application will attempt to connect using these default credentials rather than failing safely. Additionally, `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` default to empty strings, meaning the application may silently fail or behave unexpectedly if not configured.",
+          "recommendation": "Remove all default values for secret/credential config keys. Raise a `ValueError` at startup if required secrets are absent: `if not OPENAI_API_KEY: raise ValueError('OPENAI_API_KEY is required')`."
+        },
+        {
+          "id": "SEC-003",
+          "severity": "CRITICAL",
+          "category": "Data Exposure",
+          "file": "backend/api/routers/analyze.py",
+          "line": 518,
+          "description": "The `/analyze` endpoint returns the full `embedding_text` in the API response. This is the concatenation of sensitive incident fields (description, close notes, IDoc details, order numbers). This field is only used for debugging and should not be exposed in a production API response accessible to frontend clients.",
+          "recommendation": "Remove `embedding_text` from the API response object. If debugging is needed, log it server-side at DEBUG level or expose it only in a separate admin endpoint with proper authorization."
+        },
+        {
+          "id": "SEC-004",
+          "severity": "CRITICAL",
+          "category": "Data Exposure",
+          "file": "backend/api/routers/analytics.py",
+          "line": 127,
+          "description": "The `/analysis-log/{log_id}` endpoint returns the complete `full_response` JSON, which includes `similar_incidents` with their close notes and descriptions, and `input_json` containing the raw submitted ticket data (potentially including PII: caller names, locations, order numbers). This endpoint is unauthenticated.",
+          "recommendation": "Restrict this endpoint to authenticated admin users. Scrub PII fields from the `full_response` before storage, or apply field-level filtering in the API response."
+        },
+        {
+          "id": "SEC-005",
+          "severity": "CRITICAL",
+          "category": "File Upload Security",
+          "file": "backend/api/routers/analyze.py",
+          "line": 629,
+          "description": "The PDF upload endpoint (`/parse-pdf`) only checks the file extension (`filename.lower().endswith('.pdf')`). An attacker can trivially bypass this by naming a malicious file `exploit.pdf`. There is no MIME type validation, no file size limit, and no content-based validation. The file is written to a temp directory and parsed by `pdfplumber`/`PyMuPDF` — both of which have had CVEs related to malformed PDFs.",
+          "recommendation": "1) Add a file size limit (e.g., 10MB max). 2) Validate MIME type using `python-magic` or check the file's magic bytes. 3) Consider running the PDF parser in a subprocess or sandboxed environment. 4) Pin pdfplumber and PyMuPDF to versions without known CVEs."
+        },
+        {
+          "id": "SEC-006",
+          "severity": "CRITICAL",
+          "category": "File Upload Security",
+          "file": "backend/api/routers/feedback.py",
+          "line": 67,
+          "description": "The `/transcribe` audio upload endpoint has no file type validation, no file size limit, and no content validation. Any file can be uploaded as audio. The suffix is hardcoded as `.webm` regardless of what was uploaded. This could be used to upload malicious payloads that exploit vulnerabilities in the audio processing pipeline.",
+          "recommendation": "Add file size limits (e.g., 25MB for audio), validate MIME type, restrict accepted content types to known audio formats (`audio/webm`, `audio/ogg`, `audio/mp4`), and add the filename/type to the OpenAI API call so it is validated there as well."
+        },
+        {
+          "id": "SEC-007",
+          "severity": "HIGH",
+          "category": "CORS",
+          "file": "backend/api/main.py",
+          "line": 31,
+          "description": "CORS is configured with `allow_origins=[\"http://localhost:3000\", \"http://localhost:5173\"]` — these are development-only origins. In production, if this list is not updated, the CORS policy will block legitimate production requests. There is also no environment-based switching; the same config.py is used for both dev and prod.",
+          "recommendation": "Read CORS origins from an environment variable: `allow_origins=os.getenv('CORS_ORIGINS', 'http://localhost:5173').split(',')`. Ensure production origins use HTTPS only."
+        },
+        {
+          "id": "SEC-008",
+          "severity": "HIGH",
+          "category": "Information Disclosure",
+          "file": "backend/api/routers/analyze.py",
+          "line": 409,
+          "description": "The sync import endpoint and other error handlers return raw exception messages directly to API callers: `'error': str(e)[:100]`. Exception messages can contain database schema details, internal hostnames, stack trace fragments, or connection strings that aid attackers in reconnaissance.",
+          "recommendation": "Return generic error messages to callers (e.g., `'error': 'Internal processing error'`) and log the full exception server-side with a correlation ID that the caller can reference."
+        },
+        {
+          "id": "SEC-009",
+          "severity": "HIGH",
+          "category": "Input Validation",
+          "file": "backend/api/routers/feedback.py",
+          "line": 18,
+          "description": "The `FeedbackRequest` model has no length constraints on `feedback_text`. A caller can submit arbitrarily large text bodies that will be stored verbatim in the database. Additionally, `feedback_type` and `input_method` are stored directly without validation against allowed values.",
+          "recommendation": "Add Pydantic field validators: `feedback_text: str = Field(..., max_length=10000)`, and use `Literal` types for enum-like fields: `feedback_type: Literal['general', 'playbook', 'problem_tag', 'relevance'] = 'general'`. Add a `rating` validator: `rating: int | None = Field(None, ge=1, le=5)`."
+        },
+        {
+          "id": "SEC-010",
+          "severity": "HIGH",
+          "category": "Input Validation",
+          "file": "backend/api/routers/analyze.py",
+          "line": 383,
+          "description": "The `AnalyzeRequest` model accepts `ticket_json: dict` with no schema validation, size limits, or depth constraints. A deeply nested or extremely large JSON object could cause excessive memory consumption during processing. The `limit` and `threshold` fields are bounded, but the ticket body is unbounded.",
+          "recommendation": "Add a maximum size check on the request body, or define a strict Pydantic model for the expected ticket JSON structure. Consider using FastAPI's `request.body()` size limit via `ContentSizeLimitMiddleware`."
+        },
+        {
+          "id": "SEC-011",
+          "severity": "HIGH",
+          "category": "Prompt Injection",
+          "file": "backend/api/routers/analyze.py",
+          "line": 279,
+          "description": "User-supplied incident data (short_description, close_notes) is interpolated directly into LLM prompts (`evidence_text[:3000]`). A malicious user could craft incident text containing prompt injection payloads (e.g., 'Ignore previous instructions and...') that manipulate the LLM output.",
+          "recommendation": "Sanitize user-supplied content before including it in prompts: escape or strip special instruction patterns, wrap user content in explicit XML-like delimiters that the system prompt instructs the model to treat as untrusted data (e.g., `<user_content>...</user_content>`), and consider using OpenAI's structured outputs or function calling to constrain the response format."
+        },
+        {
+          "id": "SEC-012",
+          "severity": "HIGH",
+          "category": "Secrets Management",
+          "file": "backend/services/servicenow_client.py",
+          "line": 27,
+          "description": "The ServiceNow `client_secret` is read from environment variables and stored as a plain string in the object instance (`self.client_secret`). The acquired OAuth token is also stored as a plain string (`self._token`). If this object were ever serialized (e.g., logged, pickled, or included in an exception traceback), the secret would be exposed.",
+          "recommendation": "Use a secrets management solution (AWS Secrets Manager, HashiCorp Vault) for the client_secret in production. At minimum, avoid storing the token as a plain attribute by wrapping it in a class that overrides `__repr__` and `__str__` to redact the value."
+        },
+        {
+          "id": "SEC-013",
+          "severity": "HIGH",
+          "category": "Authentication",
+          "file": "backend/api/routers/sync.py",
+          "line": 317,
+          "description": "The `/sync/import` endpoint allows any unauthenticated caller to import up to 50 incidents per request from ServiceNow. This: (1) incurs OpenAI API costs for embedding generation on every import, (2) modifies the knowledge base that affects all users' analysis results, and (3) could be used to poison the knowledge base by importing crafted incidents.",
+          "recommendation": "This endpoint must be protected behind strong authentication and ideally restricted to specific admin roles. Add an API key check or admin-only JWT scope as an immediate mitigation."
+        },
+        {
+          "id": "SEC-014",
+          "severity": "HIGH",
+          "category": "Data Exposure",
+          "file": "backend/api/routers/incidents.py",
+          "line": 75,
+          "description": "The `/incidents/{incident_number}` endpoint returns `work_notes`, `description`, `caller_id`, and `location` — all potentially PII-containing fields — to unauthenticated callers. Work notes in particular can contain highly sensitive troubleshooting information and internal escalation details.",
+          "recommendation": "Implement authentication and role-based access control. Consider field-level projection where lower-privilege users receive redacted responses."
+        },
+        {
+          "id": "SEC-015",
+          "severity": "HIGH",
+          "category": "Denial of Service",
+          "file": "backend/api/routers/sync.py",
+          "line": 229,
+          "description": "The `/sync/delta` endpoint fetches up to 2000 incidents from ServiceNow and loads all existing incident numbers from the database into memory (`existing_set`) to perform an in-memory set difference. For large databases this can consume substantial memory. This operation is also triggered on every call with no caching.",
+          "recommendation": "Push the deduplication to the database using a `LEFT JOIN` or `WHERE number NOT IN (SELECT incident_number FROM rexus_incidents_v2)` pattern in the ServiceNow query, or cache the result with a short TTL."
+        },
+        {
+          "id": "SEC-016",
+          "severity": "MEDIUM",
+          "category": "Security Headers",
+          "file": "backend/api/main.py",
+          "line": 24,
+          "description": "The API has no security headers middleware. Missing headers include: `X-Content-Type-Options`, `X-Frame-Options`, `Strict-Transport-Security`, and `Content-Security-Policy`. While the primary API consumers are meant to be the React frontend and scripts, these headers are still best practice.",
+          "recommendation": "Add `SecureHeadersMiddleware` using the `secure` library, or add headers in a custom middleware."
+        },
+        {
+          "id": "SEC-017",
+          "severity": "MEDIUM",
+          "category": "Information Disclosure",
+          "file": "backend/api/main.py",
+          "line": 24,
+          "description": "FastAPI auto-generates and exposes interactive API documentation at `/docs` (Swagger UI) and `/redoc` (ReDoc) by default. These expose the full API contract, including all endpoints, request/response schemas, and example payloads, to anyone who can reach the server.",
+          "recommendation": "Disable documentation in production: `app = FastAPI(docs_url=None, redoc_url=None)` when `ENV != 'development'`, or protect the docs URLs with authentication."
+        },
+        {
+          "id": "SEC-018",
+          "severity": "MEDIUM",
+          "category": "Dependency Security",
+          "file": "backend/requirements.txt",
+          "line": 1,
+          "description": "No explicit version pinning or vulnerability scanning is evident in the repository. Libraries like `pdfplumber`, `pymupdf` (fitz), and `psycopg2` have had security-relevant CVEs. PDF parsing libraries in particular are high-risk attack surfaces.",
+          "recommendation": "Pin all dependency versions in requirements.txt, run `pip audit` or Snyk/Dependabot in CI/CD, and establish a process for regular dependency updates."
+        },
+        {
+          "id": "SEC-019",
+          "severity": "MEDIUM",
+          "category": "Error Handling",
+          "file": "backend/api/routers/incidents.py",
+          "line": 86,
+          "description": "The `get_incident` endpoint returns a tuple `(dict, 404)` when the incident is not found, but FastAPI does not interpret tuples as HTTP status codes — it will serialize the tuple as a JSON array with a 200 status. The status code 404 is never actually set.",
+          "recommendation": "Use `raise HTTPException(status_code=404, detail='Incident not found')` consistently. The same pattern exists in `clusters.py` line 52 and `wave_test.py` line 88."
+        },
+        {
+          "id": "SEC-020",
+          "severity": "MEDIUM",
+          "category": "Input Validation",
+          "file": "backend/api/routers/sync.py",
+          "line": 313,
+          "description": "The `ImportRequest` model accepts `incident_numbers: list[str]` with no per-element validation. Individual incident number strings are not validated against the expected format (e.g., `INC` prefix + digits). A caller could pass arbitrary strings that get included in ServiceNow API queries.",
+          "recommendation": "Add a validator: `@validator('incident_numbers', each_item=True) def validate_inc_number(cls, v): if not re.match(r'^INC\\d{7,10}$', v): raise ValueError(...)`."
+        },
+        {
+          "id": "SEC-021",
+          "severity": "LOW",
+          "category": "Logging",
+          "file": "backend/services/servicenow_client.py",
+          "line": 55,
+          "description": "The log message `'ServiceNow OAuth token acquired'` is logged at INFO level. This is fine, but the `data` dict returned from the token endpoint is never inspected for error fields before accessing `data['access_token']` — if ServiceNow returns an error JSON, this will raise a `KeyError` that propagates uncaught.",
+          "recommendation": "Check for error fields: `if 'error' in data: raise ValueError(f'OAuth error: {data[\"error\"]}')` before accessing `data['access_token']`."
+        }
+      ]
+    },
+    {
+      "type": "code_quality",
+      "findings": [
+        {
+          "id": "CQ-001",
+          "severity": "HIGH",
+          "category": "Error Handling",
+          "file": "backend/api/routers/analyze.py",
+          "line": 600,
+          "description": "Bare `except Exception: pass` silently swallows all errors from the progressive learning insertion. This is the worst form of error suppression — it makes the system appear healthy while silently degrading knowledge base quality over time.",
+          "recommendation": "At minimum: `except Exception as e: logger.warning('Progressive learning failed for %s: %s', incident_number, e)`. Consider adding a metric counter for monitoring."
+        },
+        {
+          "id": "CQ-002",
+          "severity": "HIGH",
+          "category": "Error Handling",
+          "file": "backend/api/routers/analyze.py",
+          "line": 193,
+          "description": "Bare `except Exception: pass` in the problem state lookup also suppresses all errors. A database connection error during this step would silently produce incorrect problem scoring without any indication.",
+          "recommendation": "Log exceptions: `except Exception as e: logger.warning('Problem state lookup failed: %s', e)`"
+        },
+        {
+          "id": "CQ-003",
+          "severity": "HIGH",
+          "category": "Type Safety",
+          "file": "frontend/src/pages/SyncPage.tsx",
+          "line": 14,
+          "description": "Multiple `any` type annotations are used in the SyncPage component (`status: any`, `importResults: any[]`), bypassing TypeScript's type system entirely. This means type errors in these values will not be caught at compile time.",
+          "recommendation": "Define explicit TypeScript interfaces for all API response types and state variables. The `importResults` type should be `{ incident: string; status: 'imported' | 'error' | 'skipped_not_closed' | 'not_found'; error?: string }[]`."
+        },
+        {
+          "id": "CQ-004",
+          "severity": "HIGH",
+          "category": "Type Safety",
+          "file": "frontend/src/pages/Clusters.tsx",
+          "line": 9,
+          "description": "The `selected` state is typed as `any` and multiple child properties are cast with `any` type annotations throughout the component (`selected.top_incidents?.slice(0, 10).map((inc: any) => ...)`). This negates TypeScript safety for all cluster detail data.",
+          "recommendation": "Use the existing `Cluster` type extended with detail fields: `type ClusterDetail = Cluster & { top_incidents: Incident[]; playbook?: Playbook; problem_ids?: string[] }`."
+        },
+        {
+          "id": "CQ-005",
+          "severity": "HIGH",
+          "category": "SOLID Principles",
+          "file": "backend/api/routers/analyze.py",
+          "line": 130,
+          "description": "The `_generate_focused_playbook` function is over 250 lines long and violates the Single Responsibility Principle. It handles: evidence building, problem scoring, CMDB family classification, two LLM API calls, grounding score calculation, and result assembly. This makes testing, debugging, and modification extremely difficult.",
+          "recommendation": "Break into focused functions: `_build_evidence_text()`, `_score_problems()`, `_call_openai_playbook()`, `_call_openai_notes()`, and a thin orchestration function. Each should be independently testable."
+        },
+        {
+          "id": "CQ-006",
+          "severity": "HIGH",
+          "category": "Naming",
+          "file": "backend/api/routers/analyze.py",
+          "line": 614,
+          "description": "The function `analyze_text` creates a variable called `fake_req` which is not fake — it is a legitimate `AnalyzeRequest` object. This name is misleading and will confuse future maintainers.",
+          "recommendation": "Rename to `analyze_req` or `text_req`."
+        },
+        {
+          "id": "CQ-007",
+          "severity": "MEDIUM",
+          "category": "DRY Violations",
+          "file": "backend/scripts/cluster_incidents.py",
+          "line": 32,
+          "description": "The `get_db()` helper function that parses DATABASE_URL and returns a psycopg2 connection is duplicated across at least 5 script files: `cluster_incidents.py`, `generate_playbooks.py`, `enrich_incidents.py`, `sync_problem_states.py`, and `ab_compare.py`. Each copy has slight variations.",
+          "recommendation": "Extract to `backend/scripts/db_utils.py` and import from there. This also makes connection configuration changes require only one edit."
+        },
+        {
+          "id": "CQ-008",
+          "severity": "MEDIUM",
+          "category": "Error Handling",
+          "file": "frontend/src/pages/SyncPage.tsx",
+          "line": 21,
+          "description": "The `checkStatus` function has an empty `finally` block with no error handling. If the fetch fails, `status` remains null and the UI silently shows 'Loading...' forever with no error message to the user.",
+          "recommendation": "Add error state: `const [statusError, setStatusError] = useState<string | null>(null)` and handle fetch failures in a catch block."
+        },
+        {
+          "id": "CQ-009",
+          "severity": "MEDIUM",
+          "category": "Error Handling",
+          "file": "frontend/src/pages/Analyze.tsx",
+          "line": 102,
+          "description": "The catch block `catch (err: any)` uses `any` type for the caught error. `err.message` is accessed without checking that `err` is an Error instance. If a non-Error value is thrown, this will fail silently or produce 'undefined' as the error message.",
+          "recommendation": "Use: `const message = err instanceof Error ? err.message : String(err); setError(message);`"
+        },
+        {
+          "id": "CQ-010",
+          "severity": "MEDIUM",
+          "category": "Dead Code",
+          "file": "frontend/src/pages/Analyze.tsx",
+          "line": 520,
+          "description": "The comment `// PlaybookSection removed — replaced by inline CollapsiblePlaybook in results` at the end of the file suggests a removed component. The file may still contain unused state or logic related to the removed component.",
+          "recommendation": "Verify that no dead state variables, imports, or logic from the removed PlaybookSection remain in the component."
+        },
+        {
+          "id": "CQ-011",
+          "severity": "MEDIUM",
+          "category": "Naming",
+          "file": "backend/scripts/load_to_database.py",
+          "line": 46,
+          "description": "The `get_db_connection()` function falls back to `user: 'nexus'` (not `rexus`) when no username is found in the DATABASE_URL. This appears to be a copy-paste error from a previous project (NEXUS) that was never corrected.",
+          "recommendation": "Change the fallback to `'rexus'` to match the rest of the codebase, or remove the fallback and raise an error if DATABASE_URL is not configured."
+        },
+        {
+          "id": "CQ-012",
+          "severity": "MEDIUM",
+          "category": "Logging",
+          "file": "backend/scripts/sync_problem_states.py",
+          "line": 64,
+          "description": "The script uses `print()` statements for output rather than the `logging` module, unlike all other scripts in the codebase which consistently use `logger.info()`. This inconsistency means sync_problem_states output cannot be configured via log level or directed to a log aggregator.",
+          "recommendation": "Replace all `print()` calls with `logger.info()` / `logger.error()` and add `logging.basicConfig()` at the top of the file."
+        },
+        {
+          "id": "CQ-013",
+          "severity": "MEDIUM",
+          "category": "Type Safety",
+          "file": "backend/api/routers/playbooks.py",
+          "line": 104,
+          "description": "The `_rank_problems` function accepts `incidents: list` with no type annotation for the list elements. The function accesses `inc['close_notes']`, `inc['short_description']`, `inc['opened_at']`, and `inc['similarity_to_centroid']` — all of which would be caught at development time with proper typing.",
+          "recommendation": "Add a TypedDict or dataclass for the incident structure, or use `list[asyncpg.Record]` with appropriate field access patterns."
+        },
+        {
+          "id": "CQ-014",
+          "severity": "MEDIUM",
+          "category": "Code Organization",
+          "file": "backend/api/routers/analyze.py",
+          "line": 110,
+          "description": "A redundant `import re as _re` occurs inside the `build_embedding_text` function body, despite `re` already being imported at the module level at line 16. The underscore alias suggests a copy-paste from another file.",
+          "recommendation": "Remove the inner import and use the module-level `re` directly."
+        },
+        {
+          "id": "CQ-015",
+          "severity": "LOW",
+          "category": "Hardcoded Values",
+          "file": "backend/scripts/load_to_database.py",
+          "line": 65,
+          "description": "The recency calculation uses a hardcoded reference date `datetime(2025, 12, 25)` described as 'Pre-Christmas cutoff'. This means the recency weights become increasingly skewed as time passes, as all incidents appear older relative to this fixed anchor.",
+          "recommendation": "Use `datetime.now()` or make the reference date a configurable parameter."
+        },
+        {
+          "id": "CQ-016",
+          "severity": "LOW",
+          "category": "Hardcoded Values",
+          "file": "frontend/src/pages/SearchPage.tsx",
+          "line": 27,
+          "description": "The static string `'18,236'` is hardcoded in the UI description: `'Semantic search across 18,236 incidents using AI embeddings'`. This will become incorrect as the database grows.",
+          "recommendation": "Fetch this count from the analytics endpoint and display it dynamically, or remove the specific number in favor of a general description."
+        },
+        {
+          "id": "CQ-017",
+          "severity": "LOW",
+          "category": "Hardcoded Values",
+          "file": "frontend/src/pages/Incidents.tsx",
+          "line": 83,
+          "description": "The category and CMDB CI filter dropdowns contain hardcoded option values. As the customer's environment grows (new systems, new categories), these dropdowns will be stale and miss filtering options.",
+          "recommendation": "Fetch available categories and CMDB CIs from the analytics or a dedicated `/filter-options` endpoint and populate the dropdowns dynamically."
+        },
+        {
+          "id": "CQ-018",
+          "severity": "LOW",
+          "category": "Naming",
+          "file": "backend/api/config.py",
+          "line": 15,
+          "description": "The `ASYNC_DATABASE_URL` variable replaces `postgresql://` with `postgresql://` (a no-op) and removes `+asyncpg`. The variable name implies it is a different URL format, but it is almost identical to `DATABASE_URL`. The comment says 'Async version of DATABASE_URL' but the transformation does nothing meaningful for asyncpg, which accepts the same URL format.",
+          "recommendation": "Remove `ASYNC_DATABASE_URL` if it is not used, or document precisely what transformation is needed and why."
+        }
+      ]
+    },
+    {
+      "type": "enhanced",
+      "findings": [
+        {
+          "id": "ENH-001",
+          "severity": "HIGH",
+          "category": "API Contract Consistency",
+          "file": "backend/api/routers/incidents.py",
+          "line": 86,
+          "description": "Inconsistent HTTP error response format across routers. `incidents.py` and `clusters.py` return `{'error': 'message'}, 404` (which FastAPI does not interpret as a 404), while `playbooks.py` correctly uses `raise HTTPException(404, ...)`. The frontend TypeScript types do not include an `error` field variant, so the error case is not handled in the UI.",
+          "recommendation": "Standardize all error responses to use `raise HTTPException(status_code=..., detail=...)`. Update the frontend API client to handle error responses uniformly with proper TypeScript types for error states."
+        },
+        {
+          "id": "ENH-002",
+          "severity": "HIGH",
+          "category": "API Contract Consistency",
+          "file": "frontend/src/api.ts",
+          "line": 146,
+          "description": "The health endpoint is called at a path constructed as `/api/v1/../../health` which relies on path traversal to reach `/health`. This is fragile and semantically incorrect. If a proxy or CDN normalizes paths, this will break.",
+          "recommendation": "Change to a direct path: `get<...>('/../../health')` should be replaced by making health a separate constant base URL, e.g., `fetch('/health')` directly without the `BASE` prefix."
+        },
+        {
+          "id": "ENH-003",
+          "severity": "HIGH",
+          "category": "FastAPI Best Practices",
+          "file": "backend/api/routers/analyze.py",
+          "line": 389,
+          "description": "The `POST /analyze` endpoint does not declare a Pydantic response model. Without a response model, FastAPI cannot validate the response shape, generate accurate OpenAPI documentation, or filter sensitive fields. The response dict is constructed manually and includes debug fields (`embedding_text`) that should not be in a production response.",
+          "recommendation": "Define a `AnalyzeResponse(BaseModel)` Pydantic model and set `@router.post('/analyze', response_model=AnalyzeResponse)`. This enforces the contract and enables field exclusion via `response_model_exclude`."
+        },
+        {
+          "id": "ENH-004",
+          "severity": "HIGH",
+          "category": "FastAPI Best Practices",
+          "file": "backend/api/routers/clusters.py",
+          "line": 12,
+          "description": "The `sort_by` parameter uses a regex `pattern` validator on a Query parameter, but this approach produces a generic 422 validation error with no helpful message. The allowable values are also not reflected in the OpenAPI schema as an enum.",
+          "recommendation": "Use a `Literal` or `Enum` type for the `sort_by` parameter: `sort_by: Literal['incident_count', 'avg_resolution_hours', 'cluster_name'] = Query('incident_count')`. This produces proper OpenAPI documentation and clearer validation errors."
+        },
+        {
+          "id": "ENH-005",
+          "severity": "HIGH",
+          "category": "React Best Practices",
+          "file": "frontend/src/pages/Analyze.tsx",
+          "line": 80,
+          "description": "The `handleAnalyze` function uses artificial `delay()` calls (`await delay(300)`, `await delay(200)`) to simulate processing steps. This creates a false UX impression that work is happening when the frontend is just sleeping. If the actual API call fails, the UI has already advanced through several fake steps.",
+          "recommendation": "Remove all artificial delays. Update the step state based on actual async operation milestones. If server-sent events or WebSocket streaming is not feasible, at least advance steps only in response to real events."
+        },
+        {
+          "id": "ENH-006",
+          "severity": "HIGH",
+          "category": "UI Testability",
+          "file": "frontend/src/pages/Analyze.tsx",
+          "line": 33,
+          "description": "The `AnalyzePage` component mixes data fetching, state management, and rendering in a single large component. There are no `data-testid` attributes on interactive elements (the analyze button, file upload, mode toggle). This makes automated UI testing with tools like Playwright or Cypress difficult.",
+          "recommendation": "Add `data-testid` attributes to all interactive and key display elements. Extract the audio recording logic into a custom hook `useAudioRecorder()`, and the feedback submission into `useFeedbackSubmit()`. This enables unit testing of logic independent of the component."
+        },
+        {
+          "id": "ENH-007",
+          "severity": "MEDIUM",
+          "category": "API Contract Consistency",
+          "file": "frontend/src/api.ts",
+          "line": 113,
+          "description": "The `SearchResult` interface defines a `weighted_score` field that is not present in the backend's `/search` endpoint response. The backend returns `similarity_score` but not `weighted_score`. This mismatch means the frontend type is inaccurate for the actual API contract.",
+          "recommendation": "Align the TypeScript interface with the actual API response. Consider using OpenAPI code generation tools (e.g., `openapi-typescript`) to keep types in sync automatically."
+        },
+        {
+          "id": "ENH-008",
+          "severity": "MEDIUM",
+          "category": "FastAPI Best Practices",
+          "file": "backend/api/routers/playbooks.py",
+          "line": 242,
+          "description": "The `POST /playbooks/generate/{cluster_id}` endpoint is idempotent in effect (it upserts a playbook) but uses the POST method. The endpoint does not accept a request body. A `PUT` or `POST` with a versioning strategy would be more semantically appropriate, and the response should return a 201 Created status on initial creation.",
+          "recommendation": "Keep POST for generation-on-demand semantics, but return `201 Created` on first creation and `200 OK` on update. Add a `status_code` parameter to the decorator: `@router.post(..., status_code=200)` and use `Response` to return 201 when appropriate."
+        },
+        {
+          "id": "ENH-009",
+          "severity": "MEDIUM",
+          "category": "React Best Practices",
+          "file": "frontend/src/pages/Dashboard.tsx",
+          "line": 9,
+          "description": "The Dashboard component fetches analytics data on every mount with no error boundary, no retry logic, and no cache. If the analytics API fails or is slow, the entire dashboard renders nothing (just 'Failed to load analytics'). In a production environment serving enterprise users, this is poor resilience.",
+          "recommendation": "Add React Error Boundary around the dashboard. Implement SWR or React Query for data fetching with automatic retry and stale-while-revalidate caching. Show partial data rather than a complete failure state."
+        },
+        {
+          "id": "ENH-010",
+          "severity": "MEDIUM",
+          "category": "API Contract Consistency",
+          "file": "backend/api/routers/analytics.py",
+          "line": 98,
+          "description": "The `/analysis-log` endpoint and `/analysis-log/{log_id}` endpoint are placed in `analytics.py` but logically belong to the analyze workflow. This inconsistency makes the API routing harder to understand and will confuse consumers of the API.",
+          "recommendation": "Move analysis log endpoints to `analyze.py` or create a dedicated `analysis_log.py` router. Apply a consistent prefix strategy: all analysis-related endpoints under `/api/v1/analyze`."
+        },
+        {
+          "id": "ENH-011",
+          "severity": "MEDIUM",
+          "category": "FastAPI Best Practices",
+          "file": "backend/api/routers/feedback.py",
+          "line": 67,
+          "description": "The `/transcribe` endpoint creates a new `AsyncOpenAI` client instance on every request, bypassing the module-level singleton pattern used elsewhere. This creates unnecessary connection overhead.",
+          "recommendation": "Import and use the shared `_get_openai()` function from `analyze.py` or the shared client utility module recommended in ARCH-007."
+        },
+        {
+          "id": "ENH-012",
+          "severity": "MEDIUM",
+          "category": "React Best Practices",
+          "file": "frontend/src/pages/SyncPage.tsx",
+          "line": 4,
+          "description": "The SyncPage component duplicates the `BASE = '/api/v1'` constant defined in `api.ts`, and makes raw `fetch()` calls instead of using the centralized `api` module functions. This creates inconsistency in error handling and makes it harder to add authentication headers globally.",
+          "recommendation": "Add sync-specific methods to the `api` module in `api.ts` (`api.syncStatus()`, `api.syncDelta()`, `api.syncImport()`) and use those in the component. This ensures consistent error handling and allows centralized header injection."
+        },
+        {
+          "id": "ENH-013",
+          "severity": "MEDIUM",
+          "category": "UI Testability",
+          "file": "frontend/src/pages/SyncPage.tsx",
+          "line": 39,
+          "description": "The `importGroup` function is defined inline inside the component and directly calls `fetch`. This tightly couples the component to the network layer and makes it impossible to unit test the import logic without mocking browser APIs.",
+          "recommendation": "Extract network calls to the `api` module, pass the function as a prop or use a custom hook `useSync()`. This enables testing the component with a mocked API client."
+        },
+        {
+          "id": "ENH-014",
+          "severity": "LOW",
+          "category": "FastAPI Best Practices",
+          "file": "backend/api/routers/wave_test.py",
+          "line": 83,
+          "description": "The `SELECT * FROM rexus_incidents` query fetches all columns including large text fields (`work_notes`, `description`, `close_notes`) only to then construct a filtered output dict. This is wasteful — fetching unnecessary large columns from the database adds latency and memory pressure.",
+          "recommendation": "Replace `SELECT *` with an explicit column list containing only the fields that will be used in `input_data` and `actual`."
+        },
+        {
+          "id": "ENH-015",
+          "severity": "LOW",
+          "category": "API Contract Consistency",
+          "file": "backend/api/routers/analyze.py",
+          "line": 614,
+          "description": "The `POST /analyze/text` endpoint internally creates an `AnalyzeRequest` and delegates to `analyze_ticket`. This means the `/analyze/text` endpoint has a different request schema than `/analyze` but produces the identical response. The OpenAPI documentation will show both as separate endpoints with separate request models, which may confuse API consumers.",
+          "recommendation": "Document the relationship clearly in the endpoint docstrings. Consider whether `/analyze/text` should be removed and replaced by instructing callers to use the `pdf_fields.Short description` field of `/analyze` directly."
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "critical": 6,
+    "high": 25,
+    "medium": 28,
+    "low": 10,
+    "total": 69,
+    "notes": "Security findings are the top priority for enterprise production readiness. SEC-001 (no authentication on any endpoint) and SEC-005/SEC-006 (unrestricted file uploads) must be resolved before any production deployment. SEC-002 (hardcoded DB credentials) and SEC-003/SEC-004 (data exposure in API responses) are immediate risks. Architecture finding ARCH-002 (sequential LLM calls blocking the event loop) and ARCH-008 (sync blocking client in async handler) will cause production reliability issues under load."
+  }
+}

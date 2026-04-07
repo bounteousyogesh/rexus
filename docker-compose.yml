@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  rexus-db:
+    image: pgvector/pgvector:pg16
+    container_name: rexus-db
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_USER: rexus
+      POSTGRES_PASSWORD: rexus_local
+      POSTGRES_DB: rexus
+    volumes:
+      - rexus_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rexus"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  rexus_pgdata:
