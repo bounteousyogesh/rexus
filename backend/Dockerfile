@@ -7,7 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
-WORKDIR /app
+# Install into /app/backend so the source tree matches 'backend.api.*' imports
+WORKDIR /app/backend
 
 COPY requirements.txt .
 
@@ -19,9 +20,12 @@ FROM python:3.13-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/opt/venv/bin:$PATH"
+    PATH="/opt/venv/bin:$PATH" \
+    PYTHONPATH="/app"
 
-WORKDIR /app
+# WORKDIR is /app — source is copied to /app/backend/
+# so Python can resolve 'backend.api.*' imports via PYTHONPATH=/app
+WORKDIR /app/backend
 
 COPY --from=builder /opt/venv /opt/venv
 COPY . .
@@ -33,4 +37,4 @@ USER appuser
 
 EXPOSE 8000
 
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "backend.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
