@@ -8,3 +8,6 @@ dist
 build
 .next/cache
 coverage
+.env*
+*.local
+README.md
