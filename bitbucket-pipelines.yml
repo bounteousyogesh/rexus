@@ -1,0 +1,108 @@
+image: atlassian/default-image:5
+
+definitions:
+  scripts:
+    - &docker_build |
+        set -euo pipefail
+
+        export DOCKER_BUILDKIT=0
+        export IMAGE_NAME="${BITBUCKET_REPO_SLUG}-${SERVICE}"
+        export IMAGE_TAG="${BITBUCKET_TAG:-${BITBUCKET_COMMIT:0:6}}"
+
+        echo "Building Docker image ${IMAGE_NAME}:${IMAGE_TAG}"
+        docker build \
+          -f "${SERVICE}/Dockerfile" \
+          -t "${IMAGE_NAME}:${IMAGE_TAG}" \
+          "${SERVICE}"
+
+  steps:
+    - step: &build_step
+        services:
+          - docker
+        script:
+          - *docker_build
+
+    - step: &push_step
+        oidc: true
+        services:
+          - docker
+        caches:
+          - docker
+        script:
+          - *docker_build
+          - pipe: atlassian/aws-ecr-push-image:2.6.0
+            variables:
+              AWS_OIDC_ROLE_ARN: "${ECR_PUSH_ROLE_ARN}"
+              AWS_DEFAULT_REGION: "${AWS_DEFAULT_REGION}"
+              IMAGE_NAME: "${IMAGE_NAME}"
+              TAGS: "${IMAGE_TAG}"
+              DEBUG: "false"
+              AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
+              AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-}"
+
+pipelines:
+  pull-requests:
+    '**':
+      - step:
+          <<: *build_step
+          name: Build backend image
+          condition:
+            changesets:
+              includePaths:
+                - "backend/**"
+          script:
+            - export SERVICE="backend"
+            - *docker_build
+
+      - step:
+          <<: *build_step
+          name: Build frontend image
+          condition:
+            changesets:
+              includePaths:
+                - "frontend/**"
+          script:
+            - export SERVICE="frontend"
+            - *docker_build
+
+  branches:
+    main:
+      - step:
+          <<: *push_step
+          name: Push backend image
+          condition:
+            changesets:
+              includePaths:
+                - "backend/**"
+          script:
+            - export SERVICE="backend"
+            - *docker_build
+            - pipe: atlassian/aws-ecr-push-image:2.6.0
+              variables:
+                AWS_OIDC_ROLE_ARN: "${ECR_PUSH_ROLE_ARN}"
+                AWS_DEFAULT_REGION: "${AWS_DEFAULT_REGION}"
+                IMAGE_NAME: "${IMAGE_NAME}"
+                TAGS: "${IMAGE_TAG}"
+                DEBUG: "true"
+                AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
+                AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-}"
+
+      - step:
+          <<: *push_step
+          name: Push frontend image
+          condition:
+            changesets:
+              includePaths:
+                - "frontend/**"
+          script:
+            - export SERVICE="frontend"
+            - *docker_build
+            - pipe: atlassian/aws-ecr-push-image:2.6.0
+              variables:
+                AWS_OIDC_ROLE_ARN: "${ECR_PUSH_ROLE_ARN}"
+                AWS_DEFAULT_REGION: "${AWS_DEFAULT_REGION}"
+                IMAGE_NAME: "${IMAGE_NAME}"
+                TAGS: "${IMAGE_TAG}"
+                DEBUG: "true"
+                AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID:-}"
+                AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY:-}"
