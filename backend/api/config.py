@@ -1,4 +1,6 @@
 import os
+import warnings
+
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -15,6 +17,6 @@ if not DATABASE_URL:
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
 if LLM_PROVIDER == "openai" and not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY environment variable is required when LLM_PROVIDER=openai.")
+    warnings.warn("OPENAI_API_KEY is not set. LLM features will not work.", stacklevel=2)
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")  # Optional; required when Claude integration is enabled
