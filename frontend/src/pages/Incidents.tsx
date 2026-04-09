@@ -119,7 +119,12 @@ export default function IncidentsPage() {
             <X size={14} /> Clear
           </button>
         )}
-      </div>
+      </div>      {/* Error banner */}
+      {error && (
+        <div className="px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+          {error}
+        </div>
+      )}
 
       {/* Table */}
       <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
