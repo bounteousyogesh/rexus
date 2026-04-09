@@ -12,8 +12,14 @@ Usage:
     await track_usage(pool, "completion", "gpt-5.4", 3700, 900, endpoint="/analyze")
 """
 
+from __future__ import annotations
+
 import logging
 from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import asyncpg
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +36,19 @@ MODEL_PRICING = {
 
 def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     """Estimate cost in USD for a single API call."""
-    pricing = MODEL_PRICING.get(model, {"input": 2.50, "output": 15.00})
+    pricing = MODEL_PRICING.get(model)
+    if pricing is None:
+        logger.warning(
+            "Unknown model '%s' — using default pricing ($2.50/$15.00 per 1M tokens). "
+            "Add this model to MODEL_PRICING in token_tracker.py for accurate cost tracking.",
+            model,
+        )
+        pricing = {"input": 2.50, "output": 15.00}
     return (input_tokens * pricing["input"] + output_tokens * pricing["output"]) / 1_000_000
 
 
 async def track_usage(
-    pool,
+    pool: "asyncpg.Pool",
     call_type: str,
     model: str,
     input_tokens: int,

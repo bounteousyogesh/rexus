@@ -1,8 +1,21 @@
 // ENH-012: Export BASE so other modules can import it instead of duplicating the constant
 export const BASE = '/api/v1';
 
+function getAuthToken(): string | null {
+  return localStorage.getItem('rexus_token');
+}
+
+function authHeaders(): Record<string, string> {
+  const token = getAuthToken();
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return headers;
+}
+
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`);
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { ...authHeaders() },
+  });
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
 }
@@ -10,8 +23,27 @@ async function get<T>(path: string): Promise<T> {
 async function post<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
+async function put<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
+async function del<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: 'DELETE',
+    headers: { ...authHeaders() },
   });
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
@@ -118,7 +150,6 @@ export interface SearchResult {
     short_description: string;
     close_notes?: string;
     similarity_score: number;
-    weighted_score: number;
     cluster_id?: number;
   }[];
 }
@@ -195,13 +226,13 @@ export const api = {
 
   // Analyze by INC number — fetch from ServiceNow and analyze in one step
   analyzeIncident: (incidentNumber: string, limit = 15) =>
-    post<AnalyzeResult>(`/analyze/incident/${encodeURIComponent(incidentNumber)}?limit=${limit}&threshold=0.4`, {}),
+    post<AnalyzeResult>(`/analyze/incident/${encodeURIComponent(incidentNumber)}`, { limit, threshold: 0.4 }),
 
   // Upload PDF → get extracted JSON
   parsePdf: async (file: File): Promise<Record<string, unknown>> => {
     const form = new FormData();
     form.append('file', file);
-    const res = await fetch(`${BASE}/parse-pdf`, { method: 'POST', body: form });
+    const res = await fetch(`${BASE}/parse-pdf`, { method: 'POST', body: form, headers: { ...authHeaders() } });
     if (!res.ok) throw new Error(`PDF parse error: ${res.status}`);
     return res.json();
   },
@@ -224,9 +255,107 @@ export const api = {
   transcribeAudio: async (blob: Blob): Promise<string> => {
     const form = new FormData();
     form.append('file', blob, 'recording.webm');
-    const res = await fetch(`${BASE}/transcribe`, { method: 'POST', body: form });
+    const res = await fetch(`${BASE}/transcribe`, { method: 'POST', body: form, headers: { ...authHeaders() } });
     if (!res.ok) throw new Error(`Transcription error: ${res.status}`);
     const data = await res.json();
     return data.text;
+  },
+};
+
+// ── Auth Types ────────────────────────────────────────────────────
+
+export interface AuthUser {
+  id: number;
+  username: string;
+  role: string;
+  email?: string;
+  is_active?: boolean;
+  must_change_password?: boolean;
+  created_at?: string;
+  last_login?: string;
+}
+
+export interface LoginResponse {
+  token: string;
+  user: { id: number; username: string; role: string };
+}
+
+// ── Auth API ──────────────────────────────────────────────────────
+
+export const authApi = {
+  login: async (username: string, password: string): Promise<LoginResponse> => {
+    const res = await fetch(`${BASE}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({ detail: 'Login failed' }));
+      throw new Error(data.detail || `Login error: ${res.status}`);
+    }
+    return res.json();
+  },
+
+  me: async (): Promise<AuthUser> => {
+    const res = await fetch(`${BASE}/auth/me`, { headers: { ...authHeaders() } });
+    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    return res.json();
+  },
+
+  changePassword: async (currentPassword: string, newPassword: string): Promise<{ status: string }> => {
+    const res = await fetch(`${BASE}/auth/change-password`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Change failed' }));
+      throw new Error(err.detail || `Change password error: ${res.status}`);
+    }
+    return res.json();
+  },
+
+  listUsers: async (): Promise<AuthUser[]> => {
+    const res = await fetch(`${BASE}/auth/users`, { headers: { ...authHeaders() } });
+    if (!res.ok) throw new Error(`API error: ${res.status}`);
+    return res.json();
+  },
+
+  createUser: async (data: { username: string; password: string; email?: string; role: string }): Promise<AuthUser> => {
+    const res = await fetch(`${BASE}/auth/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Create failed' }));
+      throw new Error(err.detail || `Create error: ${res.status}`);
+    }
+    return res.json();
+  },
+
+  updateUser: async (id: number, data: { email?: string; role?: string; is_active?: boolean; password?: string }): Promise<AuthUser> => {
+    const res = await fetch(`${BASE}/auth/users/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Update failed' }));
+      throw new Error(err.detail || `Update error: ${res.status}`);
+    }
+    return res.json();
+  },
+
+  deactivateUser: async (id: number): Promise<{ status: string }> => {
+    const res = await fetch(`${BASE}/auth/users/${id}`, {
+      method: 'DELETE',
+      headers: { ...authHeaders() },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Delete failed' }));
+      throw new Error(err.detail || `Delete error: ${res.status}`);
+    }
+    return res.json();
   },
 };

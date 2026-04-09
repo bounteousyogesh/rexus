@@ -12,20 +12,21 @@ Endpoints:
 
 import os
 import re
+import csv
 import asyncio
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated
 
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Query, HTTPException, Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from openai import AsyncOpenAI
-
-from backend.api.config import OPENAI_API_KEY
 from backend.api.database import get_pool
+from backend.api.utils.llm_provider import embed_text as _embed_text_fn, get_embed_model
 from backend.api.utils.token_tracker import track_usage
+from backend.api.utils.text_cleaning import clean_for_embedding as _shared_clean_for_embedding
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +37,6 @@ limiter = Limiter(key_func=get_remote_address)
 # Prevents runaway memory consumption on large backlogs.
 _SYNC_DELTA_MAX = int(os.getenv("SYNC_DELTA_MAX", "2000"))
 
-# ARCH-008: Shared AsyncOpenAI singleton for async handlers
-_openai_client: AsyncOpenAI | None = None
 
 
 def _get_sn_client():
@@ -46,42 +45,69 @@ def _get_sn_client():
     return ServiceNowClient()
 
 
-def _get_openai() -> AsyncOpenAI:
-    """Return shared AsyncOpenAI singleton (ARCH-008: use async client in async handlers)."""
-    global _openai_client
-    if _openai_client is None:
-        _openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-    return _openai_client
+# ── CSV catalog fallback ──────────────────────────────────────────
+# Used when the DT Search API is not available (e.g., staging/prod
+# before the API is deployed). Falls back to the incident_catalog.csv
+# exported from the dev environment.
+
+_CATALOG_PATH = Path(__file__).parent.parent.parent.parent / "data" / "incident_catalog.csv"
 
 
-# ── PII/generic cleaning for v2 embeddings ─────────────────────
-# ARCH-005: _clean_for_embedding is intentionally duplicated here (vs analyze.py)
-# because it uses a stricter PII scrub (removes more tokens).  If the two
-# implementations drift, consider extracting to backend/api/utils/text_cleaning.py.
+def _load_from_catalog(
+    start_date: str, end_date: str, closed_only: bool,
+    category: str | None = None, cmdb_ci: str | None = None,
+) -> list[dict]:
+    """Load incidents from CSV catalog, filtered by date range."""
+    if not _CATALOG_PATH.exists():
+        logger.warning(f"CSV catalog not found at {_CATALOG_PATH}")
+        return []
 
-GENERIC_WORDS = {
-    "issue", "issues", "error", "errors", "problem", "problems",
-    "fix", "fixed", "fixing", "resolve", "resolved", "resolving",
-    "ticket", "incident", "please", "help", "needed", "request",
-    "update", "updated", "updating", "closing", "closed",
-}
+    results = []
+    with open(_CATALOG_PATH) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            opened = row.get("opened_at", "")
+            if not opened:
+                continue
+            # Date filter
+            date_str = opened[:10]
+            if date_str < start_date or date_str > end_date:
+                continue
+            # Closed filter
+            if closed_only:
+                state = row.get("state", "")
+                if "Closed" not in state and "Resolved" not in state:
+                    continue
+            # Category filter
+            if category and category.lower() not in (row.get("category", "") or "").lower():
+                continue
+            # CMDB filter
+            if cmdb_ci and cmdb_ci.lower() not in (row.get("cmdb_ci", "") or "").lower():
+                continue
+
+            results.append({
+                "number": row.get("incident_number", ""),
+                "short_description": (row.get("short_description", "") or "")[:80] if "short_description" in row else "",
+                "sys_created_on": opened,
+                "cmdb_ci_display": row.get("cmdb_ci", ""),
+                "category": row.get("category", ""),
+                "incident_state_display": row.get("state", ""),
+            })
+
+    logger.info(f"CSV catalog: {len(results)} incidents for {start_date} → {end_date}")
+    return results
+
+
+
+
+# ── PII/generic cleaning for embeddings ─────────────────────
+# QUAL-002: Now uses shared utility from backend/api/utils/text_cleaning.py
+# with strict=True for the stricter PII scrub used during sync import.
 
 
 def _clean_for_embedding(text: str) -> str:
-    if not text:
-        return ""
-    text = re.sub(r'\b\d{10}\b', '', text)
-    text = re.sub(r'\b[A-Z]{2,3}\s*[-_]?\s*\d{2}\b', '', text)
-    text = re.sub(r'\$\s*[\d,]+\.?\d*', '', text)
-    text = re.sub(r'\bINC\d+\b', '', text)
-    text = re.sub(r'\bPRB\d+\b', '', text)
-    text = re.sub(r'\bINCTASK\d+\b', '', text)
-    text = re.sub(r'\b\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\b', '', text)
-    text = re.sub(r'\b\d{3}[-.]?\d{3}[-.]?\d{4}\b', '', text)
-    text = re.sub(r'\b[\w.-]+@[\w.-]+\.\w+\b', '', text)
-    words = text.split()
-    words = [w for w in words if w.lower().strip(".,;:!?()") not in GENERIC_WORDS]
-    return re.sub(r'\s+', ' ', ' '.join(words)).strip()
+    """Delegate to shared text_cleaning utility with strict PII removal."""
+    return _shared_clean_for_embedding(text, strict=True)
 
 
 def _build_embedding_text(inc: dict) -> str:
@@ -221,13 +247,19 @@ async def sync_status():
     """Overview: how many incidents in SN vs our DB."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        db_count = await conn.fetchval("SELECT COUNT(*) FROM rexus_incidents_v2")
-        db_latest = await conn.fetchval("SELECT MAX(opened_at) FROM rexus_incidents_v2")
-        db_embedded = await conn.fetchval("SELECT COUNT(*) FROM rexus_incidents_v2 WHERE embedding IS NOT NULL")
+        db_count = await conn.fetchval("SELECT COUNT(*) FROM rexus_incidents_v3")
+        db_latest = await conn.fetchval("SELECT MAX(opened_at) FROM rexus_incidents_v3")
+        db_embedded = await conn.fetchval("SELECT COUNT(*) FROM rexus_incidents_v3 WHERE embedding IS NOT NULL")
 
     try:
         client = _get_sn_client()
-        sn_closed_count = await asyncio.to_thread(client.count_table, "incident", "state=7")
+        # Try DT Search API first, fall back to Table API count
+        try:
+            closed = await asyncio.to_thread(lambda: client.search_incidents(incident_state="7"))
+            sn_closed_count = len(closed) if isinstance(closed, list) else "Unknown"
+        except Exception:
+            _closed_state = os.getenv("SN_CLOSED_STATE_CODE", "7")
+            sn_closed_count = await asyncio.to_thread(client.count_table, "incident", f"state={_closed_state}")
     except Exception as e:
         sn_closed_count = f"Error: {e}"
 
@@ -244,72 +276,118 @@ async def sync_status():
 
 
 @router.get("/sync/delta")
-async def sync_delta():
+async def sync_delta(
+    start_date: str = Query(None, description="Start date YYYY-MM-DD (default: 6 months ago)"),
+    end_date: str = Query(None, description="End date YYYY-MM-DD (default: today)"),
+    closed_only: bool = Query(True, description="Only closed incidents"),
+    category: str = Query(None, description="Category filter"),
+    cmdb_ci: str = Query(None, description="CMDB CI filter (display value)"),
+    assignment_group: str = Query(None, description="Assignment group filter"),
+):
     """
-    Find closed incidents in ServiceNow that are NOT in our database.
-    Groups them by month and week in reverse chronological order.
-    Only includes closed tickets (state = Closed Complete or Closed Skipped).
+    Find incidents in ServiceNow that are NOT in our database.
+    Uses the DT Search API with date range and closed_only filter.
+    Max 6 months per API call — automatically splits into monthly chunks if range is larger.
+    Groups results by month, week, and day in reverse chronological order.
     """
     pool = await get_pool()
 
-    async with pool.acquire() as conn:
-        db_latest = await conn.fetchval("SELECT MAX(opened_at) FROM rexus_incidents_v2")
+    # Default date range: last 6 months
+    if not start_date:
+        from dateutil.relativedelta import relativedelta
+        start_date = (datetime.now() - relativedelta(months=6)).strftime("%Y-%m-%d")
+    if not end_date:
+        end_date = datetime.now().strftime("%Y-%m-%d")
 
-    # Query ServiceNow for closed incidents after our latest
     client = _get_sn_client()
 
-    # Build query: closed incidents, opened after our latest date
-    if db_latest:
-        query = f"state=7^opened_at>{db_latest.strftime('%Y-%m-%d %H:%M:%S')}"
-    else:
-        query = "state=7"
+    filters = {}
+    if category:
+        filters["category"] = category
+    if cmdb_ci:
+        filters["cmdb_ci"] = cmdb_ci
+    if assignment_group:
+        filters["assignment_group"] = assignment_group
 
-    # SEC-015: Limit delta fetch to configurable max (default 2000) to prevent
-    # runaway memory use when the backlog is large.
-    sn_incidents = await asyncio.to_thread(
-        lambda: client.query_table(
-            "incident",
-            query=query + "^ORDERBYDESCopened_at",
-            fields=["number", "short_description", "opened_at", "cmdb_ci", "category", "state"],
-            limit=_SYNC_DELTA_MAX,
-            display_value=True,
-        )
-    )
+    # Discovery source priority:
+    # 1. CSV catalog (always available — exported from dev DB, works offline)
+    # 2. DT Search API (may not be available in staging/prod yet)
+    #
+    # CSV is the primary source because the Search API may not be deployed
+    # in all environments. When both are available, CSV gives us historical
+    # data and the Search API gives us the latest.
 
-    # Check which of these specific SN numbers already exist in DB (targeted query)
-    sn_numbers = [inc.get("number", "") for inc in sn_incidents if inc.get("number")]
-    if sn_numbers:
-        async with pool.acquire() as conn:
-            already_present = await conn.fetch(
-                "SELECT incident_number FROM rexus_incidents_v2 WHERE incident_number = ANY($1)",
-                sn_numbers,
+    sn_incidents = []
+    source = "none"
+
+    # Try CSV catalog first (always available)
+    csv_incidents = _load_from_catalog(start_date, end_date, closed_only, category, cmdb_ci)
+    if csv_incidents:
+        sn_incidents = csv_incidents
+        source = "csv"
+        logger.info(f"CSV catalog: {len(csv_incidents)} incidents for {start_date} → {end_date}")
+
+    # Try DT Search API for any incidents not in the CSV (e.g., newer than the export)
+    try:
+        api_incidents = await asyncio.to_thread(
+            lambda: client.search_incidents_by_months(
+                start_date=start_date,
+                end_date=end_date,
+                closed_only=closed_only,
+                **filters,
             )
-        existing_set = {r["incident_number"] for r in already_present}
+        )
+        if api_incidents:
+            # Merge: add any API incidents not already in the CSV set
+            csv_numbers = {inc.get("number", "") for inc in csv_incidents}
+            new_from_api = [inc for inc in api_incidents if inc.get("number", "") not in csv_numbers]
+            if new_from_api:
+                sn_incidents.extend(new_from_api)
+                logger.info(f"DT Search API: added {len(new_from_api)} incidents not in CSV")
+            source = "csv+api" if csv_incidents else "api"
+    except Exception as search_err:
+        logger.info(f"DT Search API not available ({search_err}), using CSV only")
+
+    # Extract incident numbers and basic info
+    sn_list = []
+    for inc in sn_incidents:
+        # Handle both flat and nested response structures
+        if isinstance(inc, dict):
+            num = inc.get("number", "") or inc.get("incident_number", "")
+            if not num:
+                continue
+            sn_list.append({
+                "incident_number": num,
+                "short_description": (inc.get("short_description", "") or "")[:80],
+                "opened_at": inc.get("opened_at", "") or inc.get("sys_created_on", ""),
+                "cmdb_ci": inc.get("cmdb_ci_display", "") or inc.get("cmdb_ci", ""),
+                "category": inc.get("category", ""),
+                "state": inc.get("incident_state_display", "") or inc.get("incident_state", "") or inc.get("state", ""),
+            })
+
+    # Check which of these already exist in our DB
+    sn_numbers = [inc["incident_number"] for inc in sn_list]
+    if sn_numbers:
+        # Batch check in chunks of 500 to avoid query size limits
+        existing_set = set()
+        for i in range(0, len(sn_numbers), 500):
+            batch = sn_numbers[i:i + 500]
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT incident_number FROM rexus_incidents_v3 WHERE incident_number = ANY($1)",
+                    batch,
+                )
+            existing_set.update(r["incident_number"] for r in rows)
     else:
         existing_set = set()
 
     # Filter out ones we already have
-    delta = []
-    for inc in sn_incidents:
-        num = inc.get("number", "")
-        if num and num not in existing_set:
-            # Only closed
-            state = inc.get("state", "")
-            if "Closed" in str(state):
-                cmdb = inc.get("cmdb_ci", "")
-                if isinstance(cmdb, dict):
-                    cmdb = cmdb.get("display_value", "")
-                delta.append({
-                    "incident_number": num,
-                    "short_description": inc.get("short_description", "")[:80],
-                    "opened_at": inc.get("opened_at", ""),
-                    "cmdb_ci": cmdb,
-                    "category": inc.get("category", ""),
-                })
+    delta = [inc for inc in sn_list if inc["incident_number"] not in existing_set]
 
-    # Group by month and week
-    months = {}
-    weeks = {}
+    # Group by month, week, and day
+    months: dict[str, list] = {}
+    weeks: dict[str, list] = {}
+    days: dict[str, list] = {}
     for inc in delta:
         opened = inc.get("opened_at", "")
         if opened:
@@ -317,25 +395,28 @@ async def sync_delta():
                 dt = datetime.strptime(opened[:10], "%Y-%m-%d")
                 month_key = dt.strftime("%Y-%m")
                 week_key = f"{dt.year}-W{dt.isocalendar()[1]:02d}"
+                day_key = dt.strftime("%Y-%m-%d")
 
-                if month_key not in months:
-                    months[month_key] = []
-                months[month_key].append(inc)
-
-                if week_key not in weeks:
-                    weeks[week_key] = []
-                weeks[week_key].append(inc)
+                months.setdefault(month_key, []).append(inc)
+                weeks.setdefault(week_key, []).append(inc)
+                days.setdefault(day_key, []).append(inc)
             except ValueError:
                 pass
 
     # Sort reverse chronological
     sorted_months = sorted(months.items(), key=lambda x: x[0], reverse=True)
     sorted_weeks = sorted(weeks.items(), key=lambda x: x[0], reverse=True)
+    sorted_days = sorted(days.items(), key=lambda x: x[0], reverse=True)
 
     return {
         "total_delta": len(delta),
+        "total_discovered": len(sn_list),
+        "already_in_db": len(existing_set),
+        "source": source,
+        "date_range": {"start": start_date, "end": end_date, "closed_only": closed_only},
         "by_month": [{"month": m, "count": len(incs), "incidents": incs} for m, incs in sorted_months],
         "by_week": [{"week": w, "count": len(incs), "incidents": incs} for w, incs in sorted_weeks],
+        "by_day": [{"day": d, "count": len(incs), "incidents": incs} for d, incs in sorted_days],
     }
 
 
@@ -352,7 +433,7 @@ class ImportRequest(BaseModel):
 async def sync_import(request: Request, req: ImportRequest):
     """
     Import specific incidents from ServiceNow into our database.
-    Uses the custom detailed API, generates embeddings, inserts into v2 table.
+    Uses the custom detailed API, generates embeddings, inserts into v3 table.
 
     SEC-013: This endpoint modifies the knowledge base. In production it should
     be protected by an admin role or API key (e.g. via a FastAPI dependency).
@@ -364,7 +445,7 @@ async def sync_import(request: Request, req: ImportRequest):
         raise HTTPException(400, "No incidents to import")
 
     sn_client = _get_sn_client()
-    openai_client = _get_openai()
+    embed_model = get_embed_model()
     pool = await get_pool()
 
     results = []
@@ -394,19 +475,18 @@ async def sync_import(request: Request, req: ImportRequest):
             # Build embedding text
             embedding_text = _build_embedding_text(data)
 
-            # ARCH-008: Use AsyncOpenAI (async client) in this async handler
-            emb_resp = await openai_client.embeddings.create(model="text-embedding-3-small", input=embedding_text)
-            embedding = emb_resp.data[0].embedding
+            # Use provider-agnostic embed function
+            embedding = await _embed_text_fn(embedding_text)
 
             # Track embedding token usage
             emb_tokens = len(embedding_text) // 4
-            await track_usage(pool, "embedding", "text-embedding-3-small", emb_tokens, 0,
+            await track_usage(pool, "embedding", embed_model, emb_tokens, 0,
                               endpoint="/sync/import", incident_number=inc_num)
 
-            # Insert into v2 table
+            # Insert into v3 table (QUAL-012: aligned with analyze.py)
             async with pool.acquire() as conn:
                 await conn.execute("""
-                    INSERT INTO rexus_incidents_v2 (
+                    INSERT INTO rexus_incidents_v3 (
                         incident_number, sys_id, short_description, description,
                         category, subcategory, priority, severity, impact, urgency,
                         state, close_code,

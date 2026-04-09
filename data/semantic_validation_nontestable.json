@@ -1,0 +1,41 @@
+{
+  "waves": {
+    "wave_1": {
+      "valid": 74,
+      "weak": 74,
+      "invalid": 44,
+      "total": 192
+    },
+    "wave_2": {
+      "valid": 39,
+      "weak": 60,
+      "invalid": 18,
+      "total": 117
+    },
+    "wave_3": {
+      "valid": 91,
+      "weak": 49,
+      "invalid": 10,
+      "total": 150
+    },
+    "wave_4": {
+      "valid": 29,
+      "weak": 33,
+      "invalid": 16,
+      "total": 78
+    },
+    "wave_5": {
+      "valid": 40,
+      "weak": 72,
+      "invalid": 43,
+      "total": 155
+    }
+  },
+  "grand": {
+    "total": 692,
+    "valid": 273,
+    "weak": 288,
+    "invalid": 131,
+    "avg_similarity": 0.6621
+  }
+}

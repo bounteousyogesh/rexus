@@ -1,0 +1,10 @@
+{
+  "vision": ["vision manual corrections", "vision missing orders", "vision service now order updates",
+              "vision payments", "vision update after final", "vision"],
+  "hybris": ["hybris", "hybris 1.2", "sap hybris"],
+  "gk_pos": ["gk pos", "gk launchpad", "store point of sale (pos)"],
+  "sap": ["sap oms", "sap fiori", "sap ecc prd rtp", "sap erp central component (ecc)",
+          "sap car", "sap car prd cap/hcp"],
+  "pos_features": ["pos: product browse", "pos: cvm", "pos: payments",
+                   "pos customer service list (csl)", "buy online pickup in store (bopis)"]
+}

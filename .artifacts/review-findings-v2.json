@@ -1,0 +1,478 @@
+{
+  "reviews": [
+    {
+      "type": "architecture",
+      "findings": [
+        {
+          "id": "ARCH-V2-001",
+          "severity": "HIGH",
+          "category": "Scalability",
+          "file": "backend/api/routers/analytics.py",
+          "line": 8,
+          "description": "The /analytics endpoint still executes 7 queries sequentially inside a single connection context. The comment references ARCH-011 but only the 4 overview counts were merged into one query; the remaining 6 queries (categories, top_cmdb, top_groups, resolution_stats, top_clusters, monthly_trend, states) still run one after another. asyncio.gather() was not applied. On a large dataset each query can take 100-500ms, making this endpoint consistently slow.",
+          "recommendation": "Issue each query as a coroutine and run all concurrently: `categories_coro, top_cmdb_coro, ... = conn.fetch(...), conn.fetch(...); categories, top_cmdb, ... = await asyncio.gather(categories_coro, top_cmdb_coro, ...)`."
+        },
+        {
+          "id": "ARCH-V2-002",
+          "severity": "HIGH",
+          "category": "Separation of Concerns",
+          "file": "backend/scripts/cluster_incidents.py",
+          "line": 32,
+          "description": "The ARCH-010 fix (correct urlparse usage) was applied to database.py and load_to_database.py, but cluster_incidents.py, generate_playbooks.py, ab_compare.py, and several other scripts STILL use the old fragile `replace('postgresql://', 'http://')` hack. The fix was applied inconsistently — only 2 of the 8+ affected scripts were updated. A postgres:// URL or postgresql+psycopg2:// URL would silently produce an incorrect hostname in all unfixed scripts.",
+          "recommendation": "Apply the same urlparse fix used in load_to_database.py (direct urlparse without scheme replacement) to all scripts: cluster_incidents.py, generate_playbooks.py, ab_compare.py, load_enriched.py, load_enriched_v3.py, run_wave_test.py, and enrich_incidents.py. Best fix is to create backend/scripts/_db_utils.py with the canonical implementation once."
+        },
+        {
+          "id": "ARCH-V2-003",
+          "severity": "MEDIUM",
+          "category": "Scalability",
+          "file": "backend/api/routers/analyze.py",
+          "line": 341,
+          "description": "The notes_prompt in _build_playbook_prompts interpolates evidence_text without any length truncation. The playbook_prompt correctly uses evidence_text[:3000], but the notes_prompt uses the full evidence_text string. Each evidence block can be up to 500 characters; with 15 similar incidents this can exceed 7500 characters in the notes prompt, pushing the combined context (system prompt + user prompt) close to or over gpt-4o's practical token limits, causing truncation or a 400 error from OpenAI.",
+          "recommendation": "Apply the same truncation to the notes prompt: `{evidence_text[:5000]}` (notes can tolerate more context than the playbook, but should still be capped). Also consider centralising the truncation logic into a constant."
+        },
+        {
+          "id": "ARCH-V2-004",
+          "severity": "MEDIUM",
+          "category": "Separation of Concerns",
+          "file": "backend/api/routers/playbooks.py",
+          "line": 14,
+          "description": "playbooks.py creates its own independent AsyncOpenAI singleton (_openai / _get_openai()) rather than importing the shared singleton from search.py as recommended in ARCH-007. This means there are now three separate module-level AsyncOpenAI singletons: search.py, analyze.py, and playbooks.py — each with their own httpx connection pool. The ARCH-007 fix was applied to analyze.py (it imports embed_text from search.py) but the playbook generation client was not consolidated.",
+          "recommendation": "In playbooks.py, replace the local _get_openai() definition with: `from backend.api.routers.search import _get_openai` or move the singleton to a dedicated backend/api/utils/openai_client.py module and import from there."
+        },
+        {
+          "id": "ARCH-V2-005",
+          "severity": "MEDIUM",
+          "category": "Design Pattern",
+          "file": "backend/api/config.py",
+          "line": 22,
+          "description": "ASYNC_DATABASE_URL is still defined in config.py (the CQ-018 comment says 'Remove redundant no-op transformation') but the variable is never imported or used anywhere in the codebase. It is dead code that adds confusion — a reader might assume it is used for async DB operations, but database.py uses DATABASE_URL directly.",
+          "recommendation": "Remove the ASYNC_DATABASE_URL variable entirely from config.py since it has no callers."
+        },
+        {
+          "id": "ARCH-V2-006",
+          "severity": "MEDIUM",
+          "category": "Integration Points",
+          "file": "backend/services/servicenow_client.py",
+          "line": 89,
+          "description": "All HTTP calls in ServiceNowClient use requests.get() and requests.post() with no timeout parameter. ServiceNow instances under load can take 30+ seconds to respond or hang indefinitely. A single slow ServiceNow call will hold an asyncio worker thread for the entire duration. The sync import endpoint (which calls get_incident_detailed) is particularly vulnerable — it calls ServiceNow sequentially for each of up to 50 incidents.",
+          "recommendation": "Add a timeout to all requests calls: `requests.get(..., timeout=(5, 30))` where (connect_timeout, read_timeout). Consider also using a requests.Session() for connection pooling across multiple calls in fetch_incidents_batch."
+        },
+        {
+          "id": "ARCH-V2-007",
+          "severity": "LOW",
+          "category": "Design Pattern",
+          "file": "backend/api/routers/playbooks.py",
+          "line": 149,
+          "description": "Inside _rank_problems(), the imports `from datetime import datetime, timedelta` are placed inside the function body rather than at module level. This is the same anti-pattern that was fixed as CQ-006/CQ-014 in analyze.py but was not applied to playbooks.py. timedelta is imported but never used.",
+          "recommendation": "Move the import to the top of the file. Remove the unused timedelta import."
+        }
+      ]
+    },
+    {
+      "type": "security",
+      "findings": [
+        {
+          "id": "SEC-V2-001",
+          "severity": "CRITICAL",
+          "category": "Authentication",
+          "file": "backend/api/main.py",
+          "line": 36,
+          "description": "SEC-001 (no authentication) was NOT fixed. The re-review confirms zero authentication exists on any endpoint. All 9 routers are registered without any FastAPI dependency for authentication. The sync/import endpoint, analyze endpoint, feedback endpoint, and all admin-equivalent operations remain completely open to unauthenticated callers. The comment in sync.py line 343 acknowledges this ('Currently relies on network-level access controls') but this is insufficient for an enterprise customer — network-level controls can be bypassed through SSRF, insider access, or misconfigured load balancers. This is the most critical unfixed finding.",
+          "recommendation": "Implement FastAPI API key authentication as a shared dependency. Add to main.py: `from fastapi.security import APIKeyHeader; api_key_header = APIKeyHeader(name='X-API-Key'); async def verify_api_key(key: str = Security(api_key_header)): if key != os.getenv('API_KEY'): raise HTTPException(403)`. Inject this dependency into all routers via `router = APIRouter(dependencies=[Depends(verify_api_key)])`. At minimum, the /sync/import, /analyze, /analyze/text, /parse-pdf, and /transcribe endpoints must be protected."
+        },
+        {
+          "id": "SEC-V2-002",
+          "severity": "CRITICAL",
+          "category": "Input Validation",
+          "file": "backend/api/routers/sync.py",
+          "line": 328,
+          "description": "SEC-020 fix is broken due to Pydantic v2 incompatibility. The ImportRequest model uses `class Config: max_anystr_length = 20` which is a Pydantic v1 API. In Pydantic v2 (which is installed per requirements.txt: pydantic==2.10.4), the key is renamed to str_max_length via a deprecation shim, BUT this constraint only applies to top-level string fields — it does NOT constrain string elements inside a list[str]. Verified empirically: passing incident_numbers=['A' * 25] passes validation without error. There is NO per-element length enforcement on incident_numbers. Combined with the lack of format validation, arbitrary strings (e.g. SQL fragments, excessively long strings) can be passed directly to ServiceNow API queries.",
+          "recommendation": "Replace the class Config approach with a proper Pydantic v2 annotated type: `from pydantic import Field; from typing import Annotated; IncidentNumber = Annotated[str, Field(min_length=7, max_length=20, pattern=r'^INC\\d{7,12}$')]; incident_numbers: list[IncidentNumber]`. This enforces both format and length at the element level."
+        },
+        {
+          "id": "SEC-V2-003",
+          "severity": "CRITICAL",
+          "category": "Input Validation",
+          "file": "backend/api/routers/feedback.py",
+          "line": 30,
+          "description": "SEC-009 fix for FeedbackRequest uses `class Config: str_max_length = 5000` which is the Pydantic v2 API and does work for top-level strings. However, this constraint applies to ALL string fields in the model — including feedback_type (expected values like 'general', 'playbook') and input_method ('text', 'voice'). More critically, neither feedback_type nor input_method are validated against allowed values. Any arbitrary string (including SQL fragments or XSS payloads) can be stored in the rexus_feedback table for these fields. A rating value of -999 or 9999 is also accepted since no ge/le constraint exists on the rating field.",
+          "recommendation": "Use explicit Pydantic v2 field-level validation: `feedback_text: str = Field(..., max_length=10000); feedback_type: Literal['general', 'playbook', 'problem_tag', 'relevance'] = 'general'; input_method: Literal['text', 'voice'] = 'text'; rating: int | None = Field(None, ge=1, le=5)`. Remove the class Config entirely."
+        },
+        {
+          "id": "SEC-V2-004",
+          "severity": "HIGH",
+          "category": "Data Exposure",
+          "file": "backend/api/routers/analyze.py",
+          "line": 647,
+          "description": "SEC-003 removed embedding_text from the API response, which is correct. However, the safe_incidents construction (line 647) only excludes work_notes and embedding_text. The similar_incidents response still includes: caller_id (person's name), location (store location), u_order_number (customer order), description (full incident text with PII), and other sensitive fields fetched from rexus_incidents_v3 at line 601-608. This is a partial fix — the most obvious field was removed but other PII fields remain exposed to unauthenticated callers.",
+          "recommendation": "Define an explicit allowlist of safe fields to return in similar_incidents. Replace the exclusion approach with an inclusion approach: `safe = {k: v for k, v in inc.items() if k in ('incident_number', 'short_description', 'cmdb_ci', 'assignment_group', 'similarity_score', 'cluster_id', 'category', 'subcategory', 'priority', 'opened_at', 'problem_id')}`."
+        },
+        {
+          "id": "SEC-V2-005",
+          "severity": "HIGH",
+          "category": "Information Disclosure",
+          "file": "backend/api/routers/sync.py",
+          "line": 436,
+          "description": "SEC-008 fix (generic error messages) was applied to the global exception handler in main.py, which correctly returns 'Internal server error' for unhandled exceptions. However, sync_import has a per-incident try/except that explicitly returns `str(e)[:100]` in the results array. This means internal exception messages (DB connection strings, ServiceNow hostnames, SQL errors with schema details) are still returned to callers for any failed import. The global handler does not intercept these because they are caught locally and returned as part of a 200 response.",
+          "recommendation": "Replace `'error': str(e)[:100]` with `'error': 'Import failed'` and log the actual exception server-side: `logger.error('Import failed for %s: %s', inc_num, e)`. Use a correlation ID if the caller needs to reference the failure."
+        },
+        {
+          "id": "SEC-V2-006",
+          "severity": "HIGH",
+          "category": "Prompt Injection",
+          "file": "backend/api/routers/playbooks.py",
+          "line": 368,
+          "description": "SEC-011 prompt injection protection was applied to analyze.py's _build_playbook_prompts() function, but playbooks.py's generate_playbook endpoint does NOT sanitize user-controlled data before LLM interpolation. cluster['cluster_name'] and close_notes content from incidents are interpolated directly into the user_prompt at lines 370, 388. cluster_name values come from the database but were originally derived from LLM output (which could have been manipulated) or incident text. close_notes blocks are directly from ServiceNow data.",
+          "recommendation": "Apply the same _sanitize_for_prompt() function from analyze.py to the cluster_name and evidence text in playbooks.py. Either import the function or move it to a shared utility module."
+        },
+        {
+          "id": "SEC-V2-007",
+          "severity": "HIGH",
+          "category": "Security Headers",
+          "file": "backend/api/main.py",
+          "line": 49,
+          "description": "SEC-016 added basic security headers (X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy, Cache-Control). However, two critical production headers are still missing: (1) Strict-Transport-Security (HSTS) — without this, browsers will not enforce HTTPS on subsequent requests, enabling protocol downgrade attacks; (2) Content-Security-Policy — without CSP, any XSS vulnerability in the frontend could execute arbitrary scripts. The X-XSS-Protection header is also deprecated in modern browsers and should be replaced by a proper CSP.",
+          "recommendation": "Add HSTS: `response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'` (enable only if HTTPS is guaranteed). Add a CSP: `response.headers['Content-Security-Policy'] = \"default-src 'self'; script-src 'self'\"`. Remove the deprecated X-XSS-Protection header."
+        },
+        {
+          "id": "SEC-V2-008",
+          "severity": "HIGH",
+          "category": "Authentication",
+          "file": "backend/services/servicenow_client.py",
+          "line": 54,
+          "description": "SEC-021 was partially fixed — the log level was changed from INFO to DEBUG. However, the KeyError risk on data['access_token'] when ServiceNow returns an error response was not addressed. If ServiceNow's OAuth endpoint returns an error JSON (e.g. {'error': 'invalid_client', 'error_description': '...'}), data['access_token'] raises a KeyError that propagates as an unhandled exception through all sync endpoints. The global handler in main.py will catch it as a 500, but it will not retry or provide a useful diagnostic.",
+          "recommendation": "Before accessing data['access_token'], validate the response: `if 'error' in data: raise ValueError(f\"ServiceNow OAuth error: {data.get('error')}\")`. Also check `resp.status_code` explicitly rather than relying solely on raise_for_status() since some error responses return 200 with an error body."
+        },
+        {
+          "id": "SEC-V2-009",
+          "severity": "MEDIUM",
+          "category": "API Rate Limiting",
+          "file": "backend/api/main.py",
+          "line": 66,
+          "description": "ARCH-013 (rate limiting) remains unimplemented. The comment in main.py documents that slowapi should be added but this is marked as a placeholder with no implementation. For an enterprise customer, this means the /analyze endpoint (which triggers two gpt-4o calls) and /sync/import (which triggers OpenAI embeddings) can be called at unlimited rate, creating unbounded OpenAI API cost exposure. A single automated script could generate thousands of dollars in OpenAI charges in minutes.",
+          "recommendation": "Implement slowapi rate limiting at minimum on /analyze, /analyze/text, /parse-pdf, /transcribe, and /sync/import. A pragmatic starting point: 10 requests/minute per IP on analyze endpoints, 5 requests/minute on import. Example: `limiter = Limiter(key_func=get_remote_address); @router.post('/analyze') @limiter.limit('10/minute') async def analyze_ticket(...)`."
+        },
+        {
+          "id": "SEC-V2-010",
+          "severity": "MEDIUM",
+          "category": "Error Handling",
+          "file": "backend/api/routers/analytics.py",
+          "line": 147,
+          "description": "Two endpoints still return dict-based error responses instead of HTTPException: analytics.py line 147 (`return {'error': 'Analysis not found'}`) and wave_test.py line 111 (`return {'error': 'Incident not found in this wave'}`). SEC-019 was marked as fixed for incidents.py and clusters.py but these two remaining cases were not updated. Both return HTTP 200 with an error body, meaning clients cannot distinguish success from not-found based on status code.",
+          "recommendation": "Replace both with `raise HTTPException(status_code=404, detail='...')` consistent with the rest of the codebase."
+        },
+        {
+          "id": "SEC-V2-011",
+          "severity": "MEDIUM",
+          "category": "File Upload Security",
+          "file": "backend/api/routers/feedback.py",
+          "line": 100,
+          "description": "SEC-006 added content-type validation for audio uploads, but the validation has a bypass: if file.content_type is None (some HTTP clients omit Content-Type on file uploads), the check `if file.content_type and file.content_type not in ALLOWED_AUDIO_TYPES` is skipped entirely. An attacker sending a request without a Content-Type header can upload any file. The temporary file is always named with .webm suffix regardless of actual content, and is passed to OpenAI Whisper without additional content validation.",
+          "recommendation": "Make content-type validation unconditional: `if not file.content_type or file.content_type not in ALLOWED_AUDIO_TYPES: raise HTTPException(400, 'Invalid or missing audio content type')`. Additionally validate basic magic bytes for common audio formats."
+        },
+        {
+          "id": "SEC-V2-012",
+          "severity": "LOW",
+          "category": "Information Disclosure",
+          "file": "backend/api/main.py",
+          "line": 25,
+          "description": "The REXUS_ENV environment variable defaults to 'development', meaning that if this variable is not explicitly set in production, the Swagger UI (/docs) and ReDoc (/redoc) endpoints will be exposed. This is a configuration-by-omission risk — a deployment that forgets to set REXUS_ENV=production will inadvertently expose API documentation. The safer default would be to require the variable to be explicitly set to 'development' to enable docs.",
+          "recommendation": "Flip the default: `is_dev = os.getenv('REXUS_ENV', 'production') == 'development'`. This ensures docs are disabled unless explicitly opted in. Document this in the deployment guide."
+        }
+      ]
+    },
+    {
+      "type": "code_quality",
+      "findings": [
+        {
+          "id": "CQ-V2-001",
+          "severity": "HIGH",
+          "category": "API Contract",
+          "file": "frontend/src/api.ts",
+          "line": 80,
+          "description": "The AnalyzeResult TypeScript interface still declares `embedding_text: string` at line 80, even though SEC-003 removed this field from the backend response. The backend AnalyzeResponse Pydantic model has no embedding_text field. This creates a stale contract: any frontend code that accesses `result.embedding_text` will silently receive undefined at runtime. The frontend currently does not render this field, so there is no visible bug, but the type still misleads developers.",
+          "recommendation": "Remove the `embedding_text` field from the AnalyzeResult interface in frontend/src/api.ts. This keeps the TypeScript contract in sync with the actual API response."
+        },
+        {
+          "id": "CQ-V2-002",
+          "severity": "HIGH",
+          "category": "Type Safety",
+          "file": "frontend/src/api.ts",
+          "line": 124,
+          "description": "ENH-007 (weighted_score field mismatch) was not fixed. The SearchResult interface still declares `weighted_score: number` at line 124, but the /search endpoint returns only `similarity_score`. The backend search.py returns the SQL function result which has no weighted_score column. Any code that reads `result.weighted_score` will receive undefined. While no current UI code uses this field, the type mismatch is a contract violation that can lead to subtle bugs when the field is accessed.",
+          "recommendation": "Remove the `weighted_score` field from the SearchResult results interface. If a weighted score is needed in future, implement it in the backend first and add a corresponding response model field."
+        },
+        {
+          "id": "CQ-V2-003",
+          "severity": "HIGH",
+          "category": "Dead Code",
+          "file": "backend/api/config.py",
+          "line": 22,
+          "description": "ASYNC_DATABASE_URL is defined in config.py but is imported nowhere in the codebase (grep confirms no usages). The comment says 'CQ-018 FIX: Remove redundant no-op transformation' but instead of removing it, a different no-op was added. The variable wastes a line and actively misleads maintainers into thinking it is used for async database connections.",
+          "recommendation": "Delete line 22 (`ASYNC_DATABASE_URL = DATABASE_URL.replace('+asyncpg', '')`) entirely from config.py."
+        },
+        {
+          "id": "CQ-V2-004",
+          "severity": "MEDIUM",
+          "category": "Error Handling",
+          "file": "frontend/src/pages/SyncPage.tsx",
+          "line": 67,
+          "description": "The checkDelta function has a try/finally block but no catch block. If the fetch fails (network error, 5xx response), the error is silently swallowed — `loading` is set to false, `delta` remains null, and the user sees no feedback. The same pattern that was fixed for checkStatus (CQ-008) was not applied to checkDelta.",
+          "recommendation": "Add a catch block or a shared error state: `const [deltaError, setDeltaError] = useState<string | null>(null)`. In the catch: `setDeltaError(err instanceof Error ? err.message : 'Failed to check delta')`. Display this error in the UI."
+        },
+        {
+          "id": "CQ-V2-005",
+          "severity": "MEDIUM",
+          "category": "Error Handling",
+          "file": "frontend/src/pages/SyncPage.tsx",
+          "line": 79,
+          "description": "The importGroup function has a try/finally block but no catch block. If the import fetch fails (e.g. network error or 500 response), the error is silently dropped — `importing` is reset to null, the user sees no failure message, and no entry is added to importResults. For an operation that modifies the knowledge base, silent failure is particularly dangerous.",
+          "recommendation": "Add a catch block: `catch (err) { setImportResults(prev => [...prev, { incident: numbers[0], status: 'error', error: err instanceof Error ? err.message : 'Request failed' }]); }`"
+        },
+        {
+          "id": "CQ-V2-006",
+          "severity": "MEDIUM",
+          "category": "DRY Violations",
+          "file": "backend/scripts/cluster_incidents.py",
+          "line": 32,
+          "description": "CQ-007 (duplicated get_db() across scripts) was acknowledged in comments but not resolved. There are still 7+ copies of the get_db() / get_db_connection() function across backend scripts (cluster_incidents.py, generate_playbooks.py, ab_compare.py, enrich_incidents.py, load_enriched.py, load_enriched_v3.py, run_wave_test.py, sync_problem_states.py). Each copy has slightly different error handling and some use the old fragile URL parsing hack while others use the fixed version.",
+          "recommendation": "Create backend/scripts/_db_utils.py with a single canonical `get_db()` using the correct urlparse approach (without the http:// replacement hack). Import it in all scripts. This also allows central configuration of connection parameters like connect_timeout."
+        },
+        {
+          "id": "CQ-V2-007",
+          "severity": "MEDIUM",
+          "category": "Hardcoded Values",
+          "file": "frontend/src/pages/Incidents.tsx",
+          "line": 86,
+          "description": "CQ-017 (hardcoded dropdown options) was acknowledged with a comment ('could be made dynamic') but was not fixed. The category dropdown contains 4 hardcoded values and the CMDB CI dropdown contains 6 hardcoded values. These will silently fail to show new categories or systems added to the customer's ServiceNow instance. The analytics endpoint already returns category and CMDB data that could populate these dropdowns dynamically.",
+          "recommendation": "Fetch available values from the analytics endpoint on component mount: `useEffect(() => { api.analytics().then(d => { setCategories(d.categories.map(c => c.category)); setSystemOptions(d.top_cmdb_cis.map(c => c.cmdb_ci)); }); }, [])`. Replace hardcoded options with state-driven options."
+        },
+        {
+          "id": "CQ-V2-008",
+          "severity": "MEDIUM",
+          "category": "React Best Practices",
+          "file": "frontend/src/pages/Analyze.tsx",
+          "line": 342,
+          "description": "The MediaRecorder is instantiated with a hardcoded mimeType of 'audio/webm' without checking browser support. Safari does not support audio/webm — `MediaRecorder.isTypeSupported('audio/webm')` returns false on Safari/iOS. The instantiation will throw a DOMException, which is caught and surfaces as 'Microphone access denied' (the wrong error message). This silently breaks voice recording for all Safari users.",
+          "recommendation": "Check support before instantiating: `const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : ''; const mediaRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {})`. Also update the Blob type to match: `new Blob(chunksRef.current, { type: mimeType || 'audio/webm' })`."
+        },
+        {
+          "id": "CQ-V2-009",
+          "severity": "MEDIUM",
+          "category": "Pydantic V2 Compatibility",
+          "file": "backend/api/routers/sync.py",
+          "line": 331,
+          "description": "The ImportRequest model uses `class Config` (Pydantic v1 style) instead of `model_config = ConfigDict(...)` (Pydantic v2 style). In Pydantic v2.10.4, the class Config is still supported with a deprecation warning but will be removed in Pydantic v3. The same issue exists in feedback.py's FeedbackRequest. Using the deprecated pattern means the codebase will break on the next major Pydantic upgrade without warning.",
+          "recommendation": "Migrate both models to Pydantic v2 syntax. For FeedbackRequest: instead of `class Config: str_max_length = 5000`, use field-level `Field(max_length=5000)` directly on feedback_text. For ImportRequest: replace with annotated types as described in SEC-V2-002."
+        },
+        {
+          "id": "CQ-V2-010",
+          "severity": "LOW",
+          "category": "Hardcoded Values",
+          "file": "frontend/src/pages/SearchPage.tsx",
+          "line": 23,
+          "description": "CQ-016 (hardcoded '18,236' incident count) — the specific number was removed but the description now says only 'Semantic search across incidents using AI embeddings'. While the number is gone, the component makes no API call to show a live count, so the user has no indication of the knowledge base size. This is a minor UX regression from the original (which at least showed a number, even if stale).",
+          "recommendation": "Fetch the count dynamically from the analytics endpoint: `useEffect(() => { api.analytics().then(d => setCount(d.overview.total_incidents)); }, [])` and display it as 'Semantic search across {count.toLocaleString()} incidents'."
+        },
+        {
+          "id": "CQ-V2-011",
+          "severity": "LOW",
+          "category": "Dead Code",
+          "file": "backend/api/routers/playbooks.py",
+          "line": 150,
+          "description": "`from datetime import datetime, timedelta` is imported inside _rank_problems() but timedelta is never used in the function — only datetime is used. This is a minor dead import that generates a linting warning.",
+          "recommendation": "Change to `from datetime import datetime` (remove timedelta). Also move this import to the module level per the CQ-014 fix pattern applied in analyze.py."
+        },
+        {
+          "id": "CQ-V2-012",
+          "severity": "LOW",
+          "category": "Observability",
+          "file": "frontend/src/pages/Analyze.tsx",
+          "line": 357,
+          "description": "In the FeedbackBox component, the catch block for transcription failure appends '[transcription failed]' to the text field without any user-visible error message. The user has no way to know that transcription failed versus the transcript being literally '[transcription failed]'. There is also no retry mechanism.",
+          "recommendation": "Add a separate error state for transcription failure: `const [transcribeError, setTranscribeError] = useState<string | null>(null)`. Display the error prominently instead of appending it to the text. Clear the error on subsequent attempts."
+        }
+      ]
+    },
+    {
+      "type": "enhanced",
+      "findings": [
+        {
+          "id": "ENH-V2-001",
+          "severity": "HIGH",
+          "category": "FastAPI Best Practices",
+          "file": "backend/api/routers/analyze.py",
+          "line": 492,
+          "description": "The AnalyzeResponse Pydantic model was added (ENH-003 fix) but `similar_incidents` is typed as `list[dict]` and `focused_playbook` is typed as `dict`. These untyped dicts undermine the purpose of a response model — FastAPI cannot validate field names, cannot generate accurate OpenAPI documentation for these nested objects, and cannot apply field filtering. The FocusedPlaybookResult model was defined at line 479 but is not used in AnalyzeResponse.",
+          "recommendation": "Update AnalyzeResponse to use the already-defined types: `similar_incidents: list[dict]` should reference a dedicated SimilarIncident model, and `focused_playbook: dict` should be `focused_playbook: FocusedPlaybookResult`. This completes the ENH-003 fix."
+        },
+        {
+          "id": "ENH-V2-002",
+          "severity": "HIGH",
+          "category": "API Contract Consistency",
+          "file": "frontend/src/api.ts",
+          "line": 147,
+          "description": "ENH-002 (fragile health endpoint path) was not fixed. The API still calls health via `get('/../../health')` which constructs the URL as `/api/v1/../../health` (normalised to `/health` only by path traversal). This is semantically broken and relies on the browser or server normalising the double-dot segments. Some reverse proxies (nginx, Cloudflare Workers) do not normalise these paths, which would result in a 404 in production.",
+          "recommendation": "Call the health endpoint directly without the BASE prefix: `health: () => fetch('/health').then(r => r.json())`. Remove this method from the api object that uses the BASE prefix, or maintain a separate HEALTH_BASE constant."
+        },
+        {
+          "id": "ENH-V2-003",
+          "severity": "HIGH",
+          "category": "React Best Practices",
+          "file": "frontend/src/pages/Analyze.tsx",
+          "line": 76,
+          "description": "ENH-005 (artificial delays) was partially fixed — the explicit delay() calls and fake steps were removed. However, the step state machine is still misleading: setStep('searching') is called immediately before the API call, and setStep('done') is called after. Steps like 'parsing', 'embedding', and 'playbooks' are never activated for the JSON/text flow — the UI jumps directly from idle to 'searching' then to 'done'. The progress indicator is cosmetic and non-functional for the two most common flows.",
+          "recommendation": "Either (a) use only two real states (loading/done) and a simple spinner, or (b) implement real progress via server-sent events. The current half-implemented step display confuses users who see 'parsing ticket data' and 'generating embedding' steps that are never active."
+        },
+        {
+          "id": "ENH-V2-004",
+          "severity": "MEDIUM",
+          "category": "FastAPI Best Practices",
+          "file": "backend/api/routers/sync.py",
+          "line": 336,
+          "description": "ARCH-009 recommended a background task pattern for /sync/import. The endpoint still processes all incidents synchronously, holding the HTTP connection open for the entire duration. With 50 incidents, each requiring a ServiceNow API call (~500ms) and an OpenAI embedding call (~200ms), the total processing time can exceed 35 seconds. Modern HTTP proxies (nginx default: 60s, AWS ALB: 60s) will timeout the connection before completion, silently aborting the import mid-batch with no error surfaced to the client.",
+          "recommendation": "Either (a) implement FastAPI BackgroundTasks: return immediately with a job_id and process imports asynchronously, or (b) implement Server-Sent Events to stream per-incident progress, or (c) reduce the maximum batch size to 10 incidents with a documented warning that larger imports need direct script execution."
+        },
+        {
+          "id": "ENH-V2-005",
+          "severity": "MEDIUM",
+          "category": "React Best Practices",
+          "file": "frontend/src/App.tsx",
+          "line": 21,
+          "description": "ENH-009 (Dashboard: add React Error Boundary) was partially addressed — the dashboard now shows an error state. However, the application has no React Error Boundary component at all. If any page component throws an unhandled JavaScript error (not a fetch error, but a rendering error like accessing a property on undefined), the entire app crashes to a blank white screen with no recovery path. In an enterprise tool where users upload PDFs and interact with complex data, rendering errors are likely.",
+          "recommendation": "Wrap each page render in App.tsx with an ErrorBoundary component: `import { ErrorBoundary } from 'react-error-boundary'; <ErrorBoundary fallback={<ErrorFallback />}>{page === 'analyze' && <AnalyzePage />}</ErrorBoundary>`. This prevents total app crashes from isolated page errors."
+        },
+        {
+          "id": "ENH-V2-006",
+          "severity": "MEDIUM",
+          "category": "UI Testability",
+          "file": "frontend/src/pages/Analyze.tsx",
+          "line": 183,
+          "description": "ENH-006 (data-testid attributes, custom hooks) was not implemented. No data-testid attributes exist anywhere in the frontend codebase (grep across all .tsx files confirms zero matches). The AnalyzePage, SyncPage, and other interactive components have no test hooks. For an enterprise deployment, this means there is no automated regression testing path for critical workflows like PDF upload, ticket analysis, or feedback submission.",
+          "recommendation": "Add `data-testid` attributes to all interactive elements at minimum: the analyze button (`data-testid='analyze-btn'`), file upload input (`data-testid='file-upload'`), mode toggle buttons, and key result display areas. This enables Playwright/Cypress test automation without brittle CSS selectors."
+        },
+        {
+          "id": "ENH-V2-007",
+          "severity": "MEDIUM",
+          "category": "API Contract Consistency",
+          "file": "backend/api/routers/sync.py",
+          "line": 216,
+          "description": "The /sync/status and /sync/delta endpoints report statistics about rexus_incidents_v2 (the sync table), but the /analyze endpoint queries rexus_incidents_v3 (the main knowledge base table). These are two different tables. A user looking at the Sync page sees v2 statistics (how many incidents were synced via the import flow) which may be completely different from the v3 table size used for actual analysis. This creates a confusing discrepancy between what the dashboard shows and what the analysis actually uses.",
+          "recommendation": "The /sync/status endpoint should also report the rexus_incidents_v3 count (the actual knowledge base used for analysis), or the UI should clarify that the count shown is for the raw import table, not the analysis knowledge base."
+        },
+        {
+          "id": "ENH-V2-008",
+          "severity": "LOW",
+          "category": "FastAPI Best Practices",
+          "file": "backend/api/routers/wave_test.py",
+          "line": 85,
+          "description": "The /waves/{wave}/test/{incident_number} endpoint returns the actual close_notes, work_notes, and problem_id in the 'actual' response object. This is by design for wave testing, but the endpoint has no authentication guard and the `actual` data contains the same PII fields (work_notes, u_order_number, caller information) as the incidents endpoint. Since wave testing is an internal quality-assurance function, it should be restricted.",
+          "recommendation": "Once authentication (SEC-V2-001) is implemented, annotate the wave test endpoints as requiring an admin scope or internal-only API key. Document that these endpoints are not intended for production use by end users."
+        },
+        {
+          "id": "ENH-V2-009",
+          "severity": "LOW",
+          "category": "React Best Practices",
+          "file": "frontend/src/pages/Dashboard.tsx",
+          "line": 12,
+          "description": "ENH-009 (Dashboard: retry logic and SWR/React Query) was partially addressed — error handling was added. However, there is no retry logic, no stale-while-revalidate caching, and no auto-refresh. If the analytics API is temporarily unavailable at page load, the user sees a permanent error until they manually reload. In a production environment, transient failures should be retried automatically.",
+          "recommendation": "Add basic retry logic: `let retries = 3; const load = async () => { for (let i = 0; i < retries; i++) { try { const d = await api.analytics(); setData(d); return; } catch (e) { if (i === retries-1) setError(...); await new Promise(r => setTimeout(r, 1000 * (i+1))); } } }`. Alternatively, adopt SWR: `const { data, error } = useSWR('/analytics', () => api.analytics(), { refreshInterval: 60000 })`."
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "critical": 3,
+    "high": 13,
+    "medium": 17,
+    "low": 7,
+    "total": 40,
+    "notes": "Of the 40 new findings, the most urgent are SEC-V2-001 (authentication still missing — SEC-001 was never fixed), SEC-V2-002 (SEC-020 fix is broken due to Pydantic v2 incompatibility — incident_number format validation is silently bypassed), SEC-V2-003 (feedback field validation uses wrong approach), and ARCH-V2-002 (ARCH-010 URL parsing fix was applied to only 2 of 8+ affected scripts). For an enterprise customer presentation, the continued absence of any authentication (SEC-V2-001) remains the single highest-risk gap."
+  },
+  "previous_fixes_verified": [
+    "SEC-002: VERIFIED — config.py now raises RuntimeError if DATABASE_URL or OPENAI_API_KEY are missing. No hardcoded credential defaults.",
+    "SEC-003: PARTIALLY VERIFIED — embedding_text removed from analyze response. However, other PII fields (caller_id, location, description, u_order_number) remain in similar_incidents (see SEC-V2-004).",
+    "SEC-004: VERIFIED — analysis-log/{log_id} no longer returns input_json or full_response. Only safe summary fields are returned.",
+    "SEC-005: VERIFIED — PDF upload now validates extension, content-type, size (10MB limit), minimum size, and PDF magic bytes (%PDF-).",
+    "SEC-006: PARTIALLY VERIFIED — Audio upload now validates content-type against ALLOWED_AUDIO_TYPES and enforces 25MB size limit. Bypass exists when content_type is None (see SEC-V2-011).",
+    "SEC-007: VERIFIED — CORS origins now read from CORS_ORIGINS environment variable with comma-separated support.",
+    "SEC-008: PARTIALLY VERIFIED — Global exception handler returns generic 'Internal server error'. Per-incident errors in sync_import still leak str(e) (see SEC-V2-005).",
+    "SEC-009: PARTIALLY VERIFIED — FeedbackRequest has str_max_length=5000 via class Config. However, feedback_type and input_method have no allowed-value validation, and rating has no range constraint (see SEC-V2-003).",
+    "SEC-010: VERIFIED — AnalyzeRequest still has no ticket_json size limit (this was acknowledged in original review and remains unresolved).",
+    "SEC-011: VERIFIED — _sanitize_for_prompt() function added to analyze.py with regex-based prompt injection pattern removal. Not applied to playbooks.py (see SEC-V2-006).",
+    "SEC-012: VERIFIED — client_secret is no longer logged. Token logged at DEBUG instead of INFO.",
+    "SEC-013: NOT FIXED — /sync/import still has no authentication. Comment documents the gap.",
+    "SEC-014: PARTIALLY VERIFIED — work_notes excluded from similar_incidents in analyze response. caller_id, location, description, u_order_number remain (see SEC-V2-004).",
+    "SEC-015: VERIFIED — SYNC_DELTA_MAX env var added, defaults to 2000.",
+    "SEC-016: VERIFIED — Security headers middleware added (X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy, Cache-Control). Missing HSTS and CSP (see SEC-V2-007).",
+    "SEC-017: VERIFIED — Docs disabled when REXUS_ENV != 'development'. Unsafe default (see SEC-V2-012).",
+    "SEC-018: VERIFIED — requirements.txt now has pinned versions for all dependencies.",
+    "SEC-019: PARTIALLY VERIFIED — incidents.py and clusters.py use HTTPException correctly. analytics.py and wave_test.py still return dict errors (see SEC-V2-010).",
+    "SEC-020: BROKEN REGRESSION — ImportRequest uses max_anystr_length (Pydantic v1 key) which does NOT validate list string elements in Pydantic v2. See SEC-V2-002.",
+    "SEC-021: VERIFIED — Token acquisition logged at DEBUG level. KeyError risk on data['access_token'] not fixed (see SEC-V2-008).",
+    "ARCH-001: VERIFIED — Batch fetch implemented. All similar incident details fetched in single WHERE id = ANY($1) query.",
+    "ARCH-002: VERIFIED — asyncio.gather() applied to both LLM calls in _generate_focused_playbook.",
+    "ARCH-003: VERIFIED — CMDB_FAMILIES moved to module-level constant.",
+    "ARCH-004: VERIFIED — sort_by uses Literal type in clusters.py, safe SQL column mapping enforced.",
+    "ARCH-005: PARTIALLY VERIFIED — Comment in sync.py acknowledges the duplication but clean_for_embedding is still duplicated. analyze.py has clean_for_embedding(), sync.py has _clean_for_embedding() with different behavior.",
+    "ARCH-006: VERIFIED — Imports moved to module level in analyze.py.",
+    "ARCH-007: PARTIALLY VERIFIED — analyze.py imports embed_text from search.py (shared). But playbooks.py has its own singleton (see ARCH-V2-004).",
+    "ARCH-008: VERIFIED — sync.py now uses AsyncOpenAI client.",
+    "ARCH-009: NOT FIXED — /sync/import still synchronous. Comment documents the gap.",
+    "ARCH-010: PARTIALLY VERIFIED — Fixed in database.py and load_to_database.py. Still broken in cluster_incidents.py, generate_playbooks.py, ab_compare.py, and others (see ARCH-V2-002).",
+    "ARCH-011: PARTIALLY VERIFIED — 4 count queries merged into 1. Remaining 6 queries still sequential (see ARCH-V2-001).",
+    "ARCH-012: VERIFIED — _WAVE_RE regex validation added. _validate_wave() called in both wave endpoints.",
+    "ARCH-013: NOT FIXED — Rate limiting still commented-out placeholder.",
+    "ARCH-014: VERIFIED — Progressive learning exception now logs warning with incident number and error details.",
+    "ARCH-015: VERIFIED — Health check uses pg_class.reltuples estimate instead of COUNT(*).",
+    "CQ-001: VERIFIED — Progressive learning exception logged with logger.warning.",
+    "CQ-002: VERIFIED — Problem state lookup exception logged with logger.warning.",
+    "CQ-003: VERIFIED — SyncPage has proper TypeScript interfaces (SyncStatus, SyncDelta, ImportResult, SyncIncident).",
+    "CQ-004: VERIFIED — ClusterDetail interface defined and used in Clusters.tsx.",
+    "CQ-005: VERIFIED — _generate_focused_playbook refactored into _build_evidence_lines, _score_problems, _build_playbook_prompts.",
+    "CQ-006: VERIFIED — fake_req renamed to wrapped_req in analyze_text.",
+    "CQ-007: NOT FIXED — get_db() still duplicated across 7+ scripts. Comments acknowledge the debt.",
+    "CQ-008: VERIFIED — checkStatus has error state and setStatusError. checkDelta does not (see CQ-V2-004).",
+    "CQ-009: VERIFIED — catch blocks use instanceof Error check throughout.",
+    "CQ-010: VERIFIED — No dead PlaybookSection imports or state found.",
+    "CQ-011: VERIFIED — load_to_database.py default user corrected to 'rexus'.",
+    "CQ-012: VERIFIED — sync_problem_states.py uses logger.info/error instead of print().",
+    "CQ-013: NOT FIXED — _rank_problems still uses `list` without element type annotations.",
+    "CQ-014: VERIFIED — Redundant `import re as _re` removed from build_embedding_text.",
+    "CQ-015: VERIFIED — compute_recency_weight uses datetime.now() with optional reference_date parameter.",
+    "CQ-016: PARTIALLY VERIFIED — Hardcoded '18,236' number removed. Dynamic count not added (see CQ-V2-010).",
+    "CQ-017: NOT FIXED — Hardcoded dropdown values remain in Incidents.tsx with comment acknowledging the debt.",
+    "CQ-018: PARTIALLY VERIFIED — Comment says 'Remove redundant no-op transformation' but ASYNC_DATABASE_URL is still defined with a no-op replacement. Variable is unused dead code (see CQ-V2-003).",
+    "ENH-001: VERIFIED — incidents.py and clusters.py use HTTPException. Remaining issues in analytics.py and wave_test.py (see SEC-V2-010).",
+    "ENH-002: NOT FIXED — api.health() still calls '/../../health' path traversal URL.",
+    "ENH-003: PARTIALLY VERIFIED — AnalyzeResponse model added. similar_incidents and focused_playbook still typed as dict (see ENH-V2-001).",
+    "ENH-004: VERIFIED — sort_by uses Literal type, documented in OpenAPI as enum.",
+    "ENH-005: PARTIALLY VERIFIED — Artificial delay() calls removed. Step state machine still not connected to real operations (see ENH-V2-003).",
+    "ENH-006: NOT FIXED — No data-testid attributes added anywhere. Custom hooks not extracted.",
+    "ENH-007: NOT FIXED — weighted_score still in SearchResult interface despite not being in backend response.",
+    "ENH-008: VERIFIED — generate_playbook docstring documents idempotent/upsert semantics.",
+    "ENH-009: PARTIALLY VERIFIED — Dashboard shows error state. No retry logic or SWR caching (see ENH-V2-009).",
+    "ENH-010: VERIFIED — Analysis log endpoints documented as logically belonging elsewhere but deferred.",
+    "ENH-011: VERIFIED — feedback.py uses shared _get_openai() singleton.",
+    "ENH-012: VERIFIED — SyncPage imports BASE from api.ts instead of duplicating.",
+    "ENH-013: PARTIALLY VERIFIED — importGroup wrapped in useCallback. Catch block still missing (see CQ-V2-005).",
+    "ENH-014: VERIFIED — wave_test.py uses explicit column list instead of SELECT *.",
+    "ENH-015: VERIFIED — /analyze/text relationship to /analyze documented in docstring."
+  ],
+  "regressions": [
+    {
+      "original_finding": "SEC-020",
+      "regression_id": "SEC-V2-002",
+      "description": "The fix for SEC-020 (incident_number format validation in ImportRequest) uses `class Config: max_anystr_length = 20`. This is a Pydantic v1 config key that does NOT validate string elements inside list[str] fields in Pydantic v2. Empirically verified: importing incident_numbers=['A' * 25] passes validation without error. The fix appears to work on paper but provides zero actual protection. This is a silent regression — there is no visible error, no test failure, but the security control is non-functional.",
+      "severity": "CRITICAL",
+      "fix": "Use Pydantic v2 annotated type: `IncidentNumber = Annotated[str, Field(min_length=7, max_length=20, pattern=r'^INC\\d{7,12}$')]` as the list element type."
+    },
+    {
+      "original_finding": "CQ-018",
+      "regression_id": "CQ-V2-003",
+      "description": "The fix for CQ-018 was intended to remove the ASYNC_DATABASE_URL variable or fix the no-op transformation. The comment in config.py says 'CQ-018 FIX: Remove redundant no-op transformation' but the variable is still present with a different (still no-op) transformation. The variable is also imported nowhere. This is a documentation regression — the comment implies the issue was resolved when it was not.",
+      "severity": "LOW",
+      "fix": "Delete the ASYNC_DATABASE_URL line from config.py."
+    }
+  ]
+}

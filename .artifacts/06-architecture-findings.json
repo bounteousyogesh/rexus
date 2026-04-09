@@ -1,0 +1,186 @@
+{
+  "story_id": "REX-US",
+  "step": 6,
+  "review_type": "architecture",
+  "review_date": "2026-04-07T00:00:00Z",
+  "overall_status": "FAIL",
+  "summary": {
+    "critical": 0,
+    "high": 4,
+    "medium": 9,
+    "low": 6
+  },
+  "findings": [
+    {
+      "id": "ARCH-001",
+      "severity": "HIGH",
+      "category": "separation-of-concerns",
+      "file": "backend/api/routers/analyze.py",
+      "line": 27,
+      "description": "Dead import: `from openai import AsyncOpenAI` is present at module level in analyze.py but OpenAI is never used directly in that file — all LLM calls go through `llm_provider.chat_complete`. This bypasses the provider abstraction and would silently require the openai package even in a Bedrock-only deployment.",
+      "recommendation": "Remove the unused `from openai import AsyncOpenAI` import on line 27 of analyze.py. All LLM calls must go exclusively through backend/api/utils/llm_provider.py."
+    },
+    {
+      "id": "ARCH-002",
+      "severity": "HIGH",
+      "category": "separation-of-concerns",
+      "file": "backend/api/routers/feedback.py",
+      "line": 90,
+      "description": "The /transcribe endpoint in feedback.py instantiates AsyncOpenAI directly (lines 94-96) instead of using the llm_provider abstraction. This creates a second, untracked LLM client that bypasses the configured LLM_PROVIDER setting, does not go through token tracking, and will break if the deployment switches to Bedrock.",
+      "recommendation": "Add a `transcribe_audio(audio_bytes: bytes) -> str` function to backend/api/utils/llm_provider.py (implementing Bedrock fallback or raising 501 gracefully). Call it from feedback.py instead of constructing AsyncOpenAI directly."
+    },
+    {
+      "id": "ARCH-003",
+      "severity": "HIGH",
+      "category": "no-hardcode",
+      "file": "backend/api/routers/analyze.py",
+      "line": 40,
+      "description": "ARCH-CONFIG-02: CMDB_FAMILIES mapping (lines 40-49) is hardcoded in the router with Discount Tire-specific system names (vision, hybris, gk_pos, sap, pos_features). These are business rules that can change when CI names are updated in ServiceNow and require a code deploy to update. The map is also duplicated between analyze.py (clean_for_embedding) and sync.py (_clean_for_embedding) — a comment at sync.py:48 acknowledges this but does not resolve it.",
+      "recommendation": "Move CMDB_FAMILIES to a database table (e.g., rexus_cmdb_families) or to a JSON config file loaded at startup. Expose a CRUD admin endpoint to maintain it. Extract the shared PII-cleaning logic into backend/api/utils/text_cleaning.py to eliminate the duplication noted at sync.py:48."
+    },
+    {
+      "id": "ARCH-004",
+      "severity": "HIGH",
+      "category": "no-hardcode",
+      "file": "backend/api/routers/analyze.py",
+      "line": 307,
+      "description": "ARCH-CONFIG-04: LLM prompts in analyze.py (lines 307, 361) and playbooks.py (lines 347, 358) hardcode 'Discount Tire' and 'DT' as the organisation name inside system/user prompt strings. When the application is rebranded or deployed to another customer, all prompts require code changes. The system_prompt in playbooks.py also contains specific terminology ('WE19', 'poslog', 'IDoc', 'APCR', 'finalize') that is Discount Tire-specific at line 363.",
+      "recommendation": "Extract LLM prompt templates into a configurable location — either a prompts/ directory with Jinja2 templates, a database table, or at minimum environment variables (REXUS_ORG_NAME, REXUS_DOMAIN_TERMS). Inject organisation name at runtime from config rather than embedding it literally in code."
+    },
+    {
+      "id": "ARCH-005",
+      "severity": "MEDIUM",
+      "category": "data-flow",
+      "file": "backend/api/routers/sync.py",
+      "line": 425,
+      "description": "The sync/import endpoint uses a raw 50-positional-parameter SQL INSERT (lines 425-462) with no transaction boundary. If the INSERT succeeds but the subsequent embedding token-tracking call (line 419) fails, the incident is persisted without a usage record. Conversely, if part of the batch loop fails mid-batch, there is no rollback — some incidents are imported and some are not, with no indication to the caller which succeeded before the failure.",
+      "recommendation": "Wrap each incident's fetch, embed, and insert operations in a single asyncpg transaction using `async with conn.transaction():`. The track_usage call is non-critical and can remain outside the transaction with its existing silent-fail pattern. Consider also moving the per-batch DB check to fetch once before the loop to reduce connection acquisitions."
+    },
+    {
+      "id": "ARCH-006",
+      "severity": "MEDIUM",
+      "category": "database-schema",
+      "file": "backend/api/routers/sync.py",
+      "line": 214,
+      "description": "The sync router references table rexus_incidents_v2 (lines 214-216, 314, 425) while the analyze router references rexus_incidents_v3 (lines 541-727) and the search router calls rexus_find_similar() which in migration 002 queries rexus_incidents (v1). No migration file creates rexus_incidents_v2 or rexus_incidents_v3; they are created by standalone scripts (scripts/load_enriched_v2.py, scripts/load_enriched_v3.py). This means the production tables exist outside the versioned migration system, creating a schema/code drift risk.",
+      "recommendation": "Add migration 004_v2_v3_tables.sql that formally creates rexus_incidents_v2 and rexus_incidents_v3 with IF NOT EXISTS guards, and update rexus_find_similar to target the canonical active table. Document which table is the authoritative production table; ideally unify to a single table with a schema version column."
+    },
+    {
+      "id": "ARCH-007",
+      "severity": "MEDIUM",
+      "category": "no-hardcode",
+      "file": "backend/api/routers/sync.py",
+      "line": 273,
+      "description": "ARCH-CONFIG-02: The ServiceNow 'Closed' state is hardcoded as the numeric value `state=7` in the Table API fallback query (lines 225, 273). ServiceNow state codes are instance-configurable and can differ between environments. The display-value path correctly uses the string 'Closed' but the fallback silently uses `7`.",
+      "recommendation": "Replace the hardcoded `state=7` with a configurable environment variable (e.g., SN_CLOSED_STATE_CODE=7) or always use the display_value parameter with the string 'Closed' even in the Table API fallback path."
+    },
+    {
+      "id": "ARCH-008",
+      "severity": "MEDIUM",
+      "category": "no-hardcode",
+      "file": "backend/api/routers/playbooks.py",
+      "line": 17,
+      "description": "ARCH-CONFIG-02: The regex pattern `r'\\b(OPOS-\\d+)\\b'` for JIRA ticket extraction is hardcoded in both playbooks.py (line 17) and analyze.py (line 90). 'OPOS' is a Discount Tire-specific JIRA project key. A similarly hardcoded pattern `r'\\b(5\\d{9})\\b'` for order IDs assumes all order numbers are exactly 10 digits starting with 5, which is a company-specific format.",
+      "recommendation": "Move entity extraction patterns (JIRA project keys, order number format, incident number format) to configurable environment variables or a config module (e.g., REXUS_JIRA_KEY_PATTERN, REXUS_ORDER_NUMBER_PATTERN). Extract a shared `extract_ids(text)` utility to replace the two independent implementations."
+    },
+    {
+      "id": "ARCH-009",
+      "severity": "MEDIUM",
+      "category": "scalability",
+      "file": "backend/api/routers/sync.py",
+      "line": 392,
+      "description": "The sync/import endpoint processes each incident sequentially in a for-loop (lines 392-469), making one ServiceNow HTTP request and one OpenAI embedding call per incident. For the maximum batch size of 50 incidents, this takes O(50) serial round-trips. With SERVICENOW_TIMEOUT_S=30, the worst-case response time is over 25 minutes, which will hit any reverse-proxy timeout.",
+      "recommendation": "Use asyncio.gather() with a bounded semaphore to parallelize the fetch+embed operations while keeping the DB inserts sequential (or use asyncpg's executemany). Cap concurrency via a configurable env var (SYNC_IMPORT_CONCURRENCY=5). Add a background task pattern or return a job ID with polling endpoint if fully async processing is preferred."
+    },
+    {
+      "id": "ARCH-010",
+      "severity": "MEDIUM",
+      "category": "separation-of-concerns",
+      "file": "backend/api/routers/analytics.py",
+      "line": 99,
+      "description": "The analysis-log endpoints (/analysis-log, /analysis-log/{id}) are co-located in analytics.py despite the file comment at line 99-102 noting they logically belong in a separate router. As analytics.py grows (currently 222 lines including token-usage, LLM config, analysis-log, and aggregate analytics), the module violates single-responsibility. The /config/llm endpoint (line 218) is also an admin concern unrelated to analytics.",
+      "recommendation": "Extract /analysis-log endpoints to backend/api/routers/analysis_log.py and /config/llm to backend/api/routers/config.py. Register them in main.py. This is low-risk refactoring that improves navigability and test isolation."
+    },
+    {
+      "id": "ARCH-011",
+      "severity": "MEDIUM",
+      "category": "api-design",
+      "file": "backend/api/routers/sync.py",
+      "line": 367,
+      "description": "ARCH-CONFIG-03: The /sync/import endpoint has no authentication or authorization guard. The comment at line 373 documents this risk ('In production it should be protected by an admin role or API key') but defers to 'network-level access controls'. In a cloud deployment, network segmentation alone is insufficient; the endpoint can be reached by any authenticated frontend user, and it modifies the knowledge base.",
+      "recommendation": "Add a FastAPI dependency for admin API key verification: create `backend/api/deps.py` with a `verify_admin_key` dependency using `Header(...)` and an `REXUS_ADMIN_KEY` env var. Apply it to /sync/import and /playbooks/generate/{cluster_id} with `dependencies=[Depends(verify_admin_key)]`."
+    },
+    {
+      "id": "ARCH-012",
+      "severity": "MEDIUM",
+      "category": "no-hardcode",
+      "file": "backend/api/utils/token_tracker.py",
+      "line": 21,
+      "description": "ARCH-CONFIG-02: MODEL_PRICING dict (lines 21-28) hardcodes USD costs per million tokens for specific model versions including 'gpt-5.4' which may not be an officially released model name at the time of review (the docstring cites 'https://developers.openai.com/api/docs/pricing' which is not a valid URL). The fallback pricing at line 33 also assumes a default of $2.50/$15.00 which will silently assign incorrect costs for Bedrock models.",
+      "recommendation": "Load model pricing from a JSON config file or environment-variable overrides rather than hardcoding. Add a warning log when a model is not found in the pricing table instead of silently using the fallback. For Bedrock, add Anthropic/Titan model price entries or make the tracker provider-aware."
+    },
+    {
+      "id": "ARCH-013",
+      "severity": "MEDIUM",
+      "category": "error-handling",
+      "file": "backend/api/routers/analytics.py",
+      "line": 9,
+      "description": "The analytics.py, clusters.py, incidents.py, and feedback.py routers have no structured logging. Database errors surface only through the global exception handler in main.py, which swallows all detail. When a query fails (e.g., due to schema mismatch after a migration), the operator sees only 'Internal server error' with no context in logs.",
+      "recommendation": "Add `logger = logging.getLogger(__name__)` to each router and wrap DB operations in try/except blocks that log the error at ERROR level before re-raising. Use structured logging with relevant context (endpoint, incident_number, query fragment)."
+    },
+    {
+      "id": "ARCH-014",
+      "severity": "LOW",
+      "category": "api-design",
+      "file": "backend/api/routers/analyze.py",
+      "line": 714,
+      "description": "Progressive learning (lines 714-742) inserts analyzed incidents into the knowledge base with confidence_score > 0 as the only gate. A zero-similarity result (no matches found) still produces a confidence_score of 0.0, so the gate correctly skips those. However, tickets with very low confidence (e.g., 0.01) are still added to the training set, potentially polluting it with low-quality embeddings.",
+      "recommendation": "Add a minimum confidence threshold for progressive learning insertion, configurable via env var (e.g., PROGRESSIVE_LEARNING_MIN_CONFIDENCE=0.3). Log each insertion at DEBUG level with the incident number and confidence score for auditability."
+    },
+    {
+      "id": "ARCH-015",
+      "severity": "LOW",
+      "category": "no-hardcode",
+      "file": "frontend/src/pages/Analyze.tsx",
+      "line": 19,
+      "description": "ARCH-CONFIG-04: A real incident number 'INC2239275' is hardcoded as the default value of the incNumber state (line 19), and 'INC2061899' appears as a placeholder in the input and error message (lines 82, 131). These are production incident references baked into the UI, which is inappropriate for a shared codebase and could expose confidential ticket IDs.",
+      "recommendation": "Replace the hardcoded default with an empty string (`useState('')`) and update the placeholder to a generic example like 'INC0000000'. Remove all production incident number references from the frontend source code."
+    },
+    {
+      "id": "ARCH-016",
+      "severity": "LOW",
+      "category": "database-schema",
+      "file": "backend/api/routers/feedback.py",
+      "line": 22,
+      "description": "The feedback_type field in FeedbackRequest (line 22) and the rexus_feedback table schema (migration 002, line 178) use VARCHAR(20) with default 'general' but no CHECK constraint or enum validation at the database level. Any string up to 20 characters is accepted. This means analytics queries grouping by feedback_type could silently produce inconsistent buckets if clients send unexpected values.",
+      "recommendation": "Add a database CHECK constraint: `feedback_type VARCHAR(20) CHECK (feedback_type IN ('general', 'accuracy', 'completeness', 'other'))`. In the Pydantic model, use a Literal type: `feedback_type: Literal['general', 'accuracy', 'completeness', 'other'] = 'general'`."
+    },
+    {
+      "id": "ARCH-017",
+      "severity": "LOW",
+      "category": "no-hardcode",
+      "file": "backend/api/utils/llm_provider.py",
+      "line": 11,
+      "description": "ARCH-CONFIG-05: The module docstring at line 11 references a specific model ID 'anthropic.claude-opus-4-6-v1' as an example for LLM_CHAT_MODEL when using Bedrock. Model ARNs and version identifiers change frequently with AWS Bedrock releases. While this is documentation-only, it sets an expectation that may cause misconfiguration if copied verbatim.",
+      "recommendation": "Update the docstring to use the generic format 'anthropic.claude-3-opus-20240229' (a documented Bedrock model ID) and add a note that the exact model ID should be confirmed in the AWS Bedrock console for the target region. Consider validating the model ID format at startup when LLM_PROVIDER=bedrock."
+    },
+    {
+      "id": "ARCH-018",
+      "severity": "LOW",
+      "category": "scalability",
+      "file": "backend/api/database.py",
+      "line": 34,
+      "description": "The connection pool is configured with hardcoded min_size=2 and max_size=10 (lines 35-36). For a production deployment under concurrent load (e.g., multiple /analyze calls in parallel, each acquiring a connection for vector search and another for logging), pool exhaustion is possible. The values are not configurable via environment variables.",
+      "recommendation": "Add environment variables: DB_POOL_MIN_SIZE (default 2) and DB_POOL_MAX_SIZE (default 10). Read them in database.py: `min_size=int(os.getenv('DB_POOL_MIN_SIZE', '2'))`. This allows tuning without code changes for different deployment scales."
+    },
+    {
+      "id": "ARCH-019",
+      "severity": "LOW",
+      "category": "no-hardcode",
+      "file": "frontend/vite.config.ts",
+      "line": 8,
+      "description": "ARCH-CONFIG-01: The Vite dev proxy hardcodes the backend URL as 'http://localhost:8000' (lines 8-9). While this is acceptable for local development, it is not overridable without modifying the config file, making it inconvenient for teams using non-standard ports or a remote dev backend.",
+      "recommendation": "Use `process.env.VITE_API_BASE_URL ?? 'http://localhost:8000'` in the proxy target so developers can set `VITE_API_BASE_URL=http://devserver:8001` in a local .env file without modifying vite.config.ts."
+    }
+  ]
+}

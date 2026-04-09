@@ -1,4 +1,5 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { BASE } from '../api';
 import { Zap, Loader2, Upload, ChevronDown, BookOpen, AlertCircle, Copy, Check, Mic, MicOff, Send, MessageSquare, Search } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -16,12 +17,24 @@ const STEPS: { key: Step; label: string }[] = [
 ];
 
 export default function AnalyzePage() {
-  const [incNumber, setIncNumber] = useState('INC2239275');
+  // ENH-012: All useState declarations at top of component, before any function definitions
+  const [incNumber, setIncNumber] = useState('');
   const [incFetched, setIncFetched] = useState(false);
   const [fetching, setFetching] = useState(false);
   const [ticketJson, setTicketJson] = useState('');
   const [result, setResult] = useState<AnalyzeResult | null>(null);
+  const [step, setStep] = useState<Step>('idle');
+  const [expandedInc, setExpandedInc] = useState<string | null>(null);
+  const [error, setError] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+  const [isDev, setIsDev] = useState(true);
+
+  // Check environment — hide PDF upload in production
+  useEffect(() => {
+    fetch(`${BASE}/config/llm`).then(r => r.json()).then(d => {
+      setIsDev(d.environment !== 'production');
+    }).catch(() => {});
+  }, []);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -43,9 +56,6 @@ export default function AnalyzePage() {
     }
     if (fileRef.current) fileRef.current.value = '';
   };
-  const [step, setStep] = useState<Step>('idle');
-  const [expandedInc, setExpandedInc] = useState<string | null>(null);
-  const [error, setError] = useState('');
 
   const handleAnalyze = async () => {
     setError('');
@@ -57,12 +67,6 @@ export default function AnalyzePage() {
         setResult(null);
         setExpandedInc(null);
         const parsed = JSON.parse(ticketJson);
-
-        setStep('embedding');
-        await new Promise(r => setTimeout(r, 300));
-
-        setStep('searching');
-        await new Promise(r => setTimeout(r, 300));
 
         setStep('playbooks');
         const data = await api.analyze(parsed);
@@ -79,7 +83,7 @@ export default function AnalyzePage() {
     // Otherwise, fetch from ServiceNow first
     const trimmed = incNumber.trim().toUpperCase();
     if (!trimmed) { setError('Enter an incident number'); return; }
-    if (!/^INC\d+$/.test(trimmed)) { setError('Invalid format. Enter an INC number (e.g. INC2061899)'); return; }
+    if (!/^INC\d+$/.test(trimmed)) { setError('Invalid format. Enter an INC number (e.g. INC0000000)'); return; }
 
     setStep('fetching');
     setFetching(true);
@@ -114,7 +118,7 @@ export default function AnalyzePage() {
     <div className="p-6 space-y-5 max-w-[1200px]">
       <div>
         <h2 className="text-2xl font-bold text-slate-800">Ticket Analysis</h2>
-        <p className="text-sm text-slate-500">Enter a ServiceNow incident number or upload a PDF to run AI analysis</p>
+        <p className="text-sm text-slate-500">Enter a ServiceNow incident number{isDev ? ' or upload a PDF' : ''} to run AI analysis</p>
       </div>
 
       <div className="grid grid-cols-[1fr_320px] gap-5">
@@ -128,7 +132,7 @@ export default function AnalyzePage() {
                 value={incNumber}
                 onChange={(e) => { setIncNumber(e.target.value.toUpperCase()); setIncFetched(false); setTicketJson(''); setResult(null); setError(''); }}
                 onKeyDown={(e) => e.key === 'Enter' && handleAnalyze()}
-                placeholder="INC2061899"
+                placeholder="INC0000000"
                 className="flex-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-lg text-lg font-mono tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500"
                 maxLength={15}
                 disabled={fetching}
@@ -149,16 +153,18 @@ export default function AnalyzePage() {
             </p>
           </div>
 
-          {/* OR: Upload PDF */}
-          <div
-            className="bg-white rounded-xl border-2 border-dashed border-slate-200 hover:border-blue-300 transition-colors p-4 text-center cursor-pointer"
-            onClick={() => fileRef.current?.click()}
-          >
-            <Upload size={20} className="mx-auto text-slate-400 mb-1" />
-            <p className="text-sm font-medium text-slate-600">Or upload a ServiceNow PDF</p>
-            <p className="text-xs text-slate-400 mt-0.5">Click to browse</p>
-            <input ref={fileRef} type="file" accept=".pdf" className="hidden" onChange={handleFileUpload} />
-          </div>
+          {/* OR: Upload PDF — only shown in development */}
+          {isDev && (
+            <div
+              className="bg-white rounded-xl border-2 border-dashed border-slate-200 hover:border-blue-300 transition-colors p-4 text-center cursor-pointer"
+              onClick={() => fileRef.current?.click()}
+            >
+              <Upload size={20} className="mx-auto text-slate-400 mb-1" />
+              <p className="text-sm font-medium text-slate-600">Or upload a ServiceNow PDF</p>
+              <p className="text-xs text-slate-400 mt-0.5">Click to browse</p>
+              <input ref={fileRef} type="file" accept=".pdf" className="hidden" onChange={handleFileUpload} />
+            </div>
+          )}
 
           {/* Fetched/parsed JSON preview */}
           {incFetched && ticketJson && (

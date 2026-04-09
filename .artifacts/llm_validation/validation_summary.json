@@ -1,0 +1,19 @@
+{
+  "model": "gpt-5.4",
+  "total_validated": 692,
+  "total_tokens": 918440,
+  "elapsed_minutes": 48.0,
+  "rating_distribution": {
+    "5": 151,
+    "3": 94,
+    "4": 261,
+    "2": 148,
+    "1": 38
+  },
+  "valid_4_5": 412,
+  "related_3": 94,
+  "useful_3_5": 506,
+  "weak_2": 148,
+  "unrelated_1": 38,
+  "timestamp": "2026-04-01T12:41:09.952920"
+}

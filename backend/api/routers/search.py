@@ -1,32 +1,9 @@
-import json
 from fastapi import APIRouter, Query
-from openai import AsyncOpenAI
 
-from backend.api.config import OPENAI_API_KEY
 from backend.api.database import get_pool
+from backend.api.utils.llm_provider import embed_text
 
 router = APIRouter(tags=["search"])
-
-# ARCH-007: This module owns the shared AsyncOpenAI singleton.
-# analyze.py imports embed_text() from here rather than creating its own client.
-# If additional routers need embeddings, import embed_text from this module.
-_openai_client: AsyncOpenAI | None = None
-
-
-def _get_openai() -> AsyncOpenAI:
-    global _openai_client
-    if _openai_client is None:
-        _openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-    return _openai_client
-
-
-async def embed_text(text: str) -> list[float]:
-    client = _get_openai()
-    resp = await client.embeddings.create(
-        model="text-embedding-3-small",
-        input=text,
-    )
-    return resp.data[0].embedding
 
 
 @router.get("/search")

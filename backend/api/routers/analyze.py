@@ -18,36 +18,56 @@ import asyncio
 import logging
 import tempfile
 from datetime import datetime, date
+from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator as pydantic_model_validator
 from fastapi import APIRouter, UploadFile, File, HTTPException, Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from openai import AsyncOpenAI
 
-from backend.api.config import OPENAI_API_KEY
+# ── Configurable constants ────────────────────────────────────────
+ORG_NAME = os.getenv("REXUS_ORG_NAME", "Discount Tire")
+
+# Problem scoring weights (sum to 1.0)
+_W_SIMILARITY = float(os.getenv("SCORE_W_SIMILARITY", "0.35"))
+_W_FREQUENCY = float(os.getenv("SCORE_W_FREQUENCY", "0.30"))
+_W_RECENCY = float(os.getenv("SCORE_W_RECENCY", "0.10"))
+_W_CMDB = float(os.getenv("SCORE_W_CMDB", "0.05"))
+_W_STATE = float(os.getenv("SCORE_W_STATE", "0.20"))
+
+# Grounding score thresholds
+_GROUNDING_HIGH = 8       # incidents with notes >= this → 0.95
+_GROUNDING_MED = 4        # >= this → 0.85
+_GROUNDING_LOW = 2        # >= this → 0.70
+_GROUNDING_FLOOR = 0.40   # below LOW → this score
+
+# Hybrid search bonus
+_HYBRID_BONUS_MULTIPLIER = 0.05
+_HYBRID_VEC_MIN = 0.40
+_HYBRID_KW_MIN = 0.30
+
+# Progressive learning minimum confidence
+_PROGRESSIVE_MIN_CONFIDENCE = float(os.getenv("PROGRESSIVE_MIN_CONFIDENCE", "0.0"))
 from backend.api.database import get_pool
-from backend.api.routers.search import embed_text
+from backend.api.utils.llm_provider import embed_text, chat_complete, get_chat_model, get_embed_model
 from backend.api.utils.pdf_parser import PDFParser
 from backend.api.utils.token_tracker import track_usage
+from backend.api.utils.text_cleaning import clean_for_embedding as _shared_clean_for_embedding
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["analyze"])
 limiter = Limiter(key_func=get_remote_address)
 
-# ARCH-003: CMDB family mapping at module level — group related systems
-CMDB_FAMILIES: dict[str, list[str]] = {
-    "vision": ["vision manual corrections", "vision missing orders", "vision service now order updates",
-                "vision payments", "vision update after final", "vision"],
-    "hybris": ["hybris", "hybris 1.2", "sap hybris"],
-    "gk_pos": ["gk pos", "gk launchpad", "store point of sale (pos)"],
-    "sap": ["sap oms", "sap fiori", "sap ecc prd rtp", "sap erp central component (ecc)",
-            "sap car", "sap car prd cap/hcp"],
-    "pos_features": ["pos: product browse", "pos: cvm", "pos: payments",
-                     "pos customer service list (csl)", "buy online pickup in store (bopis)"],
-}
+# ARCH-003: CMDB family mapping loaded from config file (not hardcoded)
+_CMDB_FAMILIES_PATH = Path(__file__).parent.parent.parent / "config" / "cmdb_families.json"
+if _CMDB_FAMILIES_PATH.exists():
+    with open(_CMDB_FAMILIES_PATH) as _f:
+        CMDB_FAMILIES: dict[str, list[str]] = json.load(_f)
+else:
+    logger.warning(f"CMDB families config not found at {_CMDB_FAMILIES_PATH}, using empty mapping")
+    CMDB_FAMILIES: dict[str, list[str]] = {}
 
 
 def get_cmdb_family(cmdb_ci: str) -> str:
@@ -61,14 +81,6 @@ def get_cmdb_family(cmdb_ci: str) -> str:
     return lower  # standalone — use as its own family
 
 
-_openai: AsyncOpenAI | None = None
-
-
-def _get_openai():
-    global _openai
-    if _openai is None:
-        _openai = AsyncOpenAI(api_key=OPENAI_API_KEY)
-    return _openai
 
 
 def _json_serial(obj: object) -> str:
@@ -79,16 +91,8 @@ def _json_serial(obj: object) -> str:
 
 
 def clean_for_embedding(text: str) -> str:
-    """Normalize text for embedding — remove order numbers, site codes, etc."""
-    if not text:
-        return ""
-    text = re.sub(r'\b\d{10}\b', '[ORDER]', text)
-    text = re.sub(r'\b[A-Z]{2,3}\s+\d{2}\b', '[SITE]', text)
-    text = re.sub(r'\$\s*[\d,]+\.?\d*', '$[AMOUNT]', text)
-    text = re.sub(r'\bINC\d+\b', '[INC]', text)
-    text = re.sub(r'\bPRB\d+\b', '[PRB]', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+    """Normalize text for embedding — QUAL-002: delegates to shared utility."""
+    return _shared_clean_for_embedding(text, strict=False)
 
 
 def extract_ids_from_text(text: str) -> dict:
@@ -313,7 +317,7 @@ def _build_playbook_prompts(
         else "No existing problem matches — consider creating new."
     )
 
-    playbook_prompt = f"""You are writing a CONCISE PLAYBOOK for a Discount Tire support engineer who just received this incident.
+    playbook_prompt = f"""You are writing a CONCISE PLAYBOOK for a {ORG_NAME} support engineer who just received this incident.
 
 INCIDENT: {safe_issue}
 PATTERN: {safe_cluster} ({cluster_count} total incidents in this pattern)
@@ -367,7 +371,7 @@ Escalations, problem tickets, JIRA tickets — cite source incident.
 
 RULES: Zero hallucination. Every fact cites an incident number."""
 
-    system_prompt = """You are a technical writer for Discount Tire support engineers.
+    system_prompt = """You are a technical writer for {ORG_NAME} support engineers.
 ABSOLUTE RULES:
 1. ONLY write what appears in the evidence. Do NOT invent.
 2. Every step MUST cite [INC#].
@@ -429,18 +433,16 @@ async def _generate_focused_playbook(
         incidents_with_notes, evidence_text, top_problem,
     )
 
-    client = _get_openai()
+    model = get_chat_model()
 
     # Generate both prompts in parallel
-    playbook_coro = client.chat.completions.create(
-        model="gpt-4o",
+    playbook_coro = chat_complete(
         messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": playbook_prompt}],
-        temperature=0.1, max_tokens=1500,
+        max_tokens=1500, temperature=0.1,
     )
-    notes_coro = client.chat.completions.create(
-        model="gpt-4o",
+    notes_coro = chat_complete(
         messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": notes_prompt}],
-        temperature=0.1, max_tokens=3000,
+        max_tokens=3000, temperature=0.1,
     )
     playbook_resp, notes_resp = await asyncio.gather(playbook_coro, notes_coro)
 
@@ -451,19 +453,19 @@ async def _generate_focused_playbook(
     if pool:
         pb_usage = playbook_resp.usage
         nt_usage = notes_resp.usage
-        await track_usage(pool, "completion", "gpt-4o",
+        await track_usage(pool, "completion", model,
                           pb_usage.prompt_tokens, pb_usage.completion_tokens,
                           endpoint="/analyze-playbook")
-        await track_usage(pool, "completion", "gpt-4o",
+        await track_usage(pool, "completion", model,
                           nt_usage.prompt_tokens, nt_usage.completion_tokens,
                           endpoint="/analyze-notes")
 
-    if incidents_with_notes >= 8:
+    if incidents_with_notes >= _GROUNDING_HIGH:
         grounding = 0.95
-    elif incidents_with_notes >= 4:
+    elif incidents_with_notes >= _GROUNDING_MED:
         grounding = 0.85
-    elif incidents_with_notes >= 2:
-        grounding = 0.7
+    elif incidents_with_notes >= _GROUNDING_LOW:
+        grounding = 0.70
     else:
         grounding = 0.4
 
@@ -488,6 +490,17 @@ class AnalyzeRequest(BaseModel):
     limit: int = Field(15, ge=1, le=50)
     threshold: float = Field(0.40, ge=0.0, le=1.0)
 
+    @pydantic_model_validator(mode="after")
+    def _check_ticket_json_size(self):
+        """SEC-009: Limit ticket_json size to prevent DoS via oversized payloads."""
+        serialized = json.dumps(self.ticket_json, default=str)
+        if len(serialized) > 100_000:
+            raise ValueError(
+                f"ticket_json too large ({len(serialized)} chars, max 100,000). "
+                "Reduce the payload size."
+            )
+        return self
+
 
 # ENH-003: Pydantic response model for /analyze endpoint
 class ProblemInfo(BaseModel):
@@ -511,6 +524,14 @@ class FocusedPlaybookResult(BaseModel):
 
 
 class AnalyzeResponse(BaseModel):
+    """Response model for /analyze endpoint.
+
+    ENH-014: similar_incidents contains dicts with keys:
+        incident_id (int), incident_number (str), short_description (str),
+        close_notes (str|None), similarity_score (float), cluster_id (int|None),
+        cmdb_ci (str|None), category (str|None), problem_id (str|None),
+        opened_at (str|None), resolved_at (str|None).
+    """
     analysis_id: Optional[int] = None
     cleaned_issue: str
     confidence_score: float
@@ -541,7 +562,8 @@ async def analyze_ticket(request: Request, req: AnalyzeRequest):
 
     # Track embedding token usage (~1 token per 4 chars)
     embed_tokens = len(embedding_text) // 4
-    await track_usage(pool, "embedding", "text-embedding-3-small", embed_tokens, 0,
+    from backend.api.utils.llm_provider import get_embed_model
+    await track_usage(pool, "embedding", get_embed_model(), embed_tokens, 0,
                       endpoint="/analyze", incident_number=incident_number)
     async with pool.acquire() as conn:
         # Check existence
@@ -598,7 +620,7 @@ async def analyze_ticket(request: Request, req: AnalyzeRequest):
         # Calculate hybrid score
         for iid, m in merged.items():
             base = max(m["vec"], m["kw"])
-            bonus = min(m["vec"], m["kw"]) * 0.05 if m["vec"] > 0.4 and m["kw"] > 0.3 else 0
+            bonus = min(m["vec"], m["kw"]) * _HYBRID_BONUS_MULTIPLIER if m["vec"] > _HYBRID_VEC_MIN and m["kw"] > _HYBRID_KW_MIN else 0
             m["similarity_score"] = base + bonus
 
         # Sort by hybrid score and take top N
@@ -703,7 +725,7 @@ async def analyze_ticket(request: Request, req: AnalyzeRequest):
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                RETURNING id""",
             incident_number or None,
-            json.dumps(req.ticket_json, default=_json_serial),
+            json.dumps({"cleaned_issue": cleaned_issue, "incident_number": incident_number}, default=_json_serial),  # SEC-003: store only sanitized data, not raw PII
             cleaned_issue,
             confidence_score,
             len(similar),
@@ -908,7 +930,7 @@ async def parse_pdf(file: UploadFile = File(...)):
         raise HTTPException(400, "File too small to be a valid PDF")
 
     # Validate PDF magic bytes
-    if not content[:5] == b'%PDF-':
+    if not content.startswith(b'%PDF-'):
         raise HTTPException(400, "File does not appear to be a valid PDF")
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:

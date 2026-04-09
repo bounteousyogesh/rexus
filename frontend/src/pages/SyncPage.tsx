@@ -15,6 +15,7 @@ interface SyncIncident {
 interface DeltaGroup {
   month?: string;
   week?: string;
+  day?: string;
   count: number;
   incidents: SyncIncident[];
 }
@@ -32,8 +33,12 @@ interface SyncStatus {
 
 interface SyncDelta {
   total_delta: number;
+  total_discovered: number;
+  already_in_db: number;
+  source: string;
   by_month: DeltaGroup[];
   by_week: DeltaGroup[];
+  by_day: DeltaGroup[];
 }
 
 interface ImportResult {
@@ -50,9 +55,17 @@ export default function SyncPage() {
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState<string | null>(null);
   const [importResults, setImportResults] = useState<ImportResult[]>([]);
-  const [groupBy, setGroupBy] = useState<'month' | 'week'>('month');
+  const [groupBy, setGroupBy] = useState<'day' | 'week' | 'month'>('month');
+  const [startDate, setStartDate] = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() - 6);
+    return d.toISOString().slice(0, 10);
+  });
+  const [endDate, setEndDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [closedOnly, setClosedOnly] = useState(true);
+  const [filterCategory, setFilterCategory] = useState('');
+  const [filterCmdb, setFilterCmdb] = useState('');
+  const [deltaError, setDeltaError] = useState<string | null>(null);
 
-  // CQ-008: Error handling added to checkStatus
   const checkStatus = useCallback(async () => {
     setStatusError(null);
     try {
@@ -66,10 +79,19 @@ export default function SyncPage() {
 
   const checkDelta = async () => {
     setLoading(true);
+    setDeltaError(null);
     try {
-      const res = await fetch(`${BASE}/sync/delta`);
+      const params = new URLSearchParams();
+      params.set('start_date', startDate);
+      params.set('end_date', endDate);
+      params.set('closed_only', String(closedOnly));
+      if (filterCategory) params.set('category', filterCategory);
+      if (filterCmdb) params.set('cmdb_ci', filterCmdb);
+      const res = await fetch(`${BASE}/sync/delta?${params}`);
       if (!res.ok) throw new Error(`Delta check failed: ${res.status}`);
       setDelta(await res.json());
+    } catch (err) {
+      setDeltaError(err instanceof Error ? err.message : 'Failed to check delta');
     } finally {
       setLoading(false);
     }
@@ -90,6 +112,8 @@ export default function SyncPage() {
       setImportResults(prev => [...prev, ...(data.results as ImportResult[])]);
       // Refresh delta
       await checkDelta();
+    } catch (err) {
+      setDeltaError(err instanceof Error ? err.message : 'Import failed');
     } finally {
       setImporting(null);
     }
@@ -97,7 +121,7 @@ export default function SyncPage() {
 
   useEffect(() => { checkStatus(); }, [checkStatus]);
 
-  const groups: DeltaGroup[] = delta ? (groupBy === 'month' ? delta.by_month : delta.by_week) : [];
+  const groups: DeltaGroup[] = delta ? (groupBy === 'month' ? delta.by_month : groupBy === 'week' ? delta.by_week : delta.by_day) : [];
 
   return (
     <div className="p-6 space-y-4 max-w-[1000px]">
@@ -150,30 +174,70 @@ export default function SyncPage() {
         </div>
       </div>
 
-      {/* Check delta button */}
-      <div className="flex gap-3">
-        <button
-          onClick={checkDelta}
-          disabled={loading}
-          className="flex items-center gap-2 px-4 py-2.5 bg-slate-900 text-white rounded-lg text-sm font-medium hover:bg-slate-800 disabled:opacity-50"
-        >
-          {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-          {loading ? 'Checking...' : 'Check for New Incidents'}
-        </button>
-
-        {delta && (
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setGroupBy('month')}
-              className={`px-3 py-2 rounded-lg text-xs font-medium ${groupBy === 'month' ? 'bg-slate-200 text-slate-800' : 'text-slate-500 hover:bg-slate-100'}`}
-            >By Month</button>
-            <button
-              onClick={() => setGroupBy('week')}
-              className={`px-3 py-2 rounded-lg text-xs font-medium ${groupBy === 'week' ? 'bg-slate-200 text-slate-800' : 'text-slate-500 hover:bg-slate-100'}`}
-            >By Week</button>
+      {/* Filters */}
+      <div className="bg-white rounded-xl border border-slate-100 p-4">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Search Filters</p>
+        <div className="flex gap-3 items-end flex-wrap">
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">From</label>
+            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
+              className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm" />
           </div>
-        )}
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">To</label>
+            <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
+              className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm" />
+          </div>
+          <div className="flex items-center gap-2 py-2">
+            <input type="checkbox" id="closedOnly" checked={closedOnly} onChange={e => setClosedOnly(e.target.checked)}
+              className="rounded border-slate-300" />
+            <label htmlFor="closedOnly" className="text-xs text-slate-600">Closed only</label>
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Category</label>
+            <input value={filterCategory} onChange={e => setFilterCategory(e.target.value)}
+              placeholder="e.g. Software" className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm w-32" />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">System (CMDB CI)</label>
+            <input value={filterCmdb} onChange={e => setFilterCmdb(e.target.value)}
+              placeholder="e.g. GK POS" className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm w-32" />
+          </div>
+          <button
+            onClick={checkDelta}
+            disabled={loading}
+            className="flex items-center gap-2 px-5 py-2.5 bg-slate-900 text-white rounded-lg text-sm font-medium hover:bg-slate-800 disabled:opacity-50"
+          >
+            {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+            {loading ? 'Searching...' : 'Search ServiceNow'}
+          </button>
+        </div>
       </div>
+
+      {deltaError && (
+        <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg p-3">
+          <AlertCircle size={16} /> {deltaError}
+        </div>
+      )}
+
+      {/* Summary + group toggle */}
+      {delta && (
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-slate-600">
+            Found <strong>{delta.total_discovered}</strong> incidents
+            <span className="text-slate-400 text-xs ml-1">(source: {delta.source})</span>,{' '}
+            <strong>{delta.already_in_db}</strong> already in DB,{' '}
+            <strong className="text-blue-600">{delta.total_delta}</strong> new to import
+          </p>
+          <div className="flex items-center gap-1">
+            {(['day', 'week', 'month'] as const).map(g => (
+              <button key={g} onClick={() => setGroupBy(g)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium ${groupBy === g ? 'bg-slate-200 text-slate-800' : 'text-slate-500 hover:bg-slate-100'}`}
+              >By {g.charAt(0).toUpperCase() + g.slice(1)}</button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Delta results */}
       {delta && (
@@ -212,7 +276,7 @@ export default function SyncPage() {
               </div>
 
               {groups.map((group: DeltaGroup) => {
-                const label = group.month || group.week;
+                const label = group.day || group.week || group.month;
                 const imported = group.incidents.filter((i: SyncIncident) =>
                   importResults.some(r => r.incident === i.incident_number && r.status === 'imported')
                 );
@@ -277,8 +341,8 @@ export default function SyncPage() {
         <div className="bg-white rounded-xl border border-slate-100 p-4">
           <h3 className="text-xs font-semibold text-slate-500 uppercase mb-2">Import Log</h3>
           <div className="text-xs space-y-1 max-h-40 overflow-y-auto">
-            {importResults.map((r, i) => (
-              <div key={i} className={`flex items-center gap-2 ${r.status === 'imported' ? 'text-emerald-600' : r.status === 'error' ? 'text-red-500' : 'text-slate-500'}`}>
+            {importResults.map((r) => (
+              <div key={r.incident} className={`flex items-center gap-2 ${r.status === 'imported' ? 'text-emerald-600' : r.status === 'error' ? 'text-red-500' : 'text-slate-500'}`}>
                 {r.status === 'imported' ? <CheckCircle2 size={10} /> : <AlertCircle size={10} />}
                 <span className="font-mono">{r.incident}</span>: {r.status}
                 {r.error && <span className="text-red-400 ml-1">({r.error})</span>}

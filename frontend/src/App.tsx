@@ -1,25 +1,36 @@
 import { useState } from 'react';
-import { Search, BarChart3, Layers, Activity, Zap, RefreshCw } from 'lucide-react';
+import { Search, BarChart3, Layers, Activity, Zap, RefreshCw, Shield, LogOut, KeyRound } from 'lucide-react';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+import LoginPage from './pages/Login';
 import DashboardPage from './pages/Dashboard';
 import AnalyzePage from './pages/Analyze';
 import IncidentsPage from './pages/Incidents';
 import ClustersPage from './pages/Clusters';
 import SearchPage from './pages/SearchPage';
 import SyncPage from './pages/SyncPage';
+import AdminPage from './pages/Admin';
+import ChangePassword from './pages/ChangePassword';
 
-type Page = 'dashboard' | 'analyze' | 'sync' | 'incidents' | 'clusters' | 'search';
+type Page = 'dashboard' | 'analyze' | 'sync' | 'incidents' | 'clusters' | 'search' | 'admin';
 
-const NAV: { id: Page; label: string; icon: React.ReactNode }[] = [
+const NAV: { id: Page; label: string; icon: React.ReactNode; adminOnly?: boolean }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: <BarChart3 size={18} /> },
   { id: 'analyze', label: 'Analyze', icon: <Zap size={18} /> },
   { id: 'sync', label: 'SN Sync', icon: <RefreshCw size={18} /> },
   { id: 'incidents', label: 'Incidents', icon: <Activity size={18} /> },
   { id: 'clusters', label: 'Clusters', icon: <Layers size={18} /> },
   { id: 'search', label: 'Search', icon: <Search size={18} /> },
+  { id: 'admin', label: 'Admin', icon: <Shield size={18} />, adminOnly: true },
 ];
 
-export default function App() {
+function AuthenticatedApp() {
+  const { user, logout } = useAuth();
   const [page, setPage] = useState<Page>('dashboard');
+  const [showChangePassword, setShowChangePassword] = useState(false);
+
+  const visibleNav = NAV.filter(
+    (item) => !item.adminOnly || user?.role === 'admin',
+  );
 
   return (
     <div className="flex h-screen bg-slate-50">
@@ -33,7 +44,7 @@ export default function App() {
           <p className="text-xs text-slate-400 mt-1">Incident Intelligence</p>
         </div>
         <nav className="flex-1 p-3 space-y-1">
-          {NAV.map((item) => (
+          {visibleNav.map((item) => (
             <button
               key={item.id}
               onClick={() => setPage(item.id)}
@@ -48,6 +59,28 @@ export default function App() {
             </button>
           ))}
         </nav>
+
+        {/* User info + logout at bottom */}
+        <div className="p-3 border-t border-slate-700 space-y-1">
+          <div className="px-3 py-2 text-sm">
+            <div className="font-medium text-white">{user?.username}</div>
+            <div className="text-xs text-slate-400 capitalize">{user?.role}</div>
+          </div>
+          <button
+            onClick={() => setShowChangePassword(true)}
+            className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+          >
+            <KeyRound size={16} />
+            Change Password
+          </button>
+          <button
+            onClick={logout}
+            className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-slate-400 hover:text-red-400 hover:bg-slate-800 transition-colors"
+          >
+            <LogOut size={16} />
+            Sign out
+          </button>
+        </div>
       </aside>
 
       {/* Main content */}
@@ -58,7 +91,39 @@ export default function App() {
         {page === 'incidents' && <IncidentsPage />}
         {page === 'clusters' && <ClustersPage />}
         {page === 'search' && <SearchPage />}
+        {page === 'admin' && <AdminPage />}
       </main>
+
+      {/* Change Password Modal */}
+      {showChangePassword && (
+        <ChangePassword onClose={() => setShowChangePassword(false)} />
+      )}
     </div>
   );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppGate />
+    </AuthProvider>
+  );
+}
+
+function AppGate() {
+  const { isAuthenticated, isLoading } = useAuth();
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-100">
+        <div className="text-slate-500 text-sm">Loading...</div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <LoginPage />;
+  }
+
+  return <AuthenticatedApp />;
 }

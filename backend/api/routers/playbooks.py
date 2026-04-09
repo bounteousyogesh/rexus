@@ -1,22 +1,13 @@
+import os
 import re
 from datetime import datetime
 from typing import Any
 from fastapi import APIRouter, Query, HTTPException
-from openai import AsyncOpenAI
 
-from backend.api.config import OPENAI_API_KEY
 from backend.api.database import get_pool
+from backend.api.utils.llm_provider import chat_complete, get_chat_model
 
 router = APIRouter(tags=["playbooks"])
-
-_openai: AsyncOpenAI | None = None
-
-
-def _get_openai():
-    global _openai
-    if _openai is None:
-        _openai = AsyncOpenAI(api_key=OPENAI_API_KEY)
-    return _openai
 
 
 def extract_ids(text: str) -> dict:
@@ -354,7 +345,8 @@ async def generate_playbook(cluster_id: int):
 
     # ── LLM synthesis with strict grounding ────────────────────────
 
-    system_prompt = """You are a technical documentation writer for Discount Tire (DT) support engineers.
+    org_name = os.getenv("REXUS_ORG_NAME", "Discount Tire")
+    system_prompt = f"""You are a technical documentation writer for {org_name} support engineers.
 
 ABSOLUTE RULES:
 1. ONLY write what appears in the evidence below. Do NOT invent any steps, tools, or procedures.
@@ -420,15 +412,13 @@ Table of ALL incidents analyzed (this section goes LAST):
 
 REMEMBER: Zero hallucination. Every fact must trace to an incident number above."""
 
-    client = _get_openai()
-    response = await client.chat.completions.create(
-        model="gpt-4o",
+    response = await chat_complete(
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        temperature=0.1,
         max_tokens=4000,
+        temperature=0.1,
     )
 
     content = response.choices[0].message.content or ""

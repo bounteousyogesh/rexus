@@ -9,7 +9,7 @@ import os
 import time
 import logging
 import requests
-from typing import Dict, Any, List, Optional
+from typing import Any
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,14 @@ class ServiceNowClient:
         if not all([self.instance_url, self.client_id, self.client_secret]):
             raise ValueError("SERVICENOW_INSTANCE, SERVICENOW_CLIENT_ID, SERVICENOW_CLIENT_SECRET are required")
 
-        self._token: Optional[str] = None
+        # SEC-006: Enforce HTTPS to prevent credential transmission in plaintext
+        if not self.instance_url.startswith("https://"):
+            raise ValueError(
+                f"SERVICENOW_INSTANCE must use HTTPS (got: {self.instance_url[:30]}...). "
+                "Set SERVICENOW_INSTANCE=https://your-instance.service-now.com"
+            )
+
+        self._token: str | None = None
         self._token_expires: float = 0
         self._timeout = int(os.getenv("SERVICENOW_TIMEOUT_S", "30"))
 
@@ -60,7 +67,7 @@ class ServiceNowClient:
         logger.debug("ServiceNow OAuth token acquired (client_id=%s)", self.client_id)
         return self._token
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {self._get_token()}",
             "Accept": "application/json",
@@ -72,11 +79,11 @@ class ServiceNowClient:
         self,
         table: str,
         query: str = "",
-        fields: List[str] = None,
+        fields: list[str] = None,
         limit: int = 100,
         offset: int = 0,
         display_value: bool = True,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Query any ServiceNow table with pagination."""
         params = {
             "sysparm_limit": limit,
@@ -112,9 +119,116 @@ class ServiceNowClient:
         resp.raise_for_status()
         return int(resp.headers.get("X-Total-Count", 0))
 
+    # ── DT Search API ────────────────────────────────────────────────
+
+    def search_incidents(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        closed_only: bool = True,
+        **filters,
+    ) -> list[dict[str, Any]]:
+        """
+        Search incidents using the DT custom search API.
+        GET /api/ditci/v1/servicenow/incident/search
+
+        Date params:
+            start_date: YYYY-MM-DD (required for date range queries)
+            end_date: YYYY-MM-DD (required for date range queries)
+            closed_only: true/false (default true)
+
+        Filter params (ANDed together):
+            category, subcategory, incident_state, caller_id,
+            assignment_group, assigned_to, contact_type, cmdb_ci, priority
+
+        Max date range: 6 months per call.
+        """
+        search_path = os.getenv(
+            "SERVICENOW_SEARCH_PATH",
+            "/api/ditci/v1/servicenow/incident/search",
+        )
+        params: dict[str, str] = {}
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
+        params["closed_only"] = str(closed_only).lower()
+
+        # Add any additional filters
+        for k, v in filters.items():
+            if v:
+                params[k] = str(v)
+
+        resp = requests.get(
+            f"{self.instance_url}{search_path}",
+            headers=self._headers(),
+            params=params,
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        # Response: {"result": {"success": true, "data": {"count": N, "incidents": [...]}}}
+        if isinstance(data, dict):
+            result = data.get("result", {})
+            if isinstance(result, dict):
+                inner = result.get("data", {})
+                if isinstance(inner, dict):
+                    return inner.get("incidents", [])
+                if isinstance(inner, list):
+                    return inner
+            if isinstance(result, list):
+                return result
+        if isinstance(data, list):
+            return data
+        return []
+
+    def search_incidents_by_months(
+        self,
+        start_date: str,
+        end_date: str,
+        closed_only: bool = True,
+        **filters,
+    ) -> list[dict[str, Any]]:
+        """
+        Search incidents across a date range that may exceed 6 months.
+        Automatically splits into monthly chunks and merges results.
+
+        start_date/end_date: YYYY-MM-DD format.
+        """
+        from datetime import datetime, timedelta
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d")
+
+        all_incidents = []
+        chunk_start = start
+
+        while chunk_start < end:
+            # Each chunk = 1 month
+            if chunk_start.month == 12:
+                chunk_end = chunk_start.replace(year=chunk_start.year + 1, month=1, day=1) - timedelta(days=1)
+            else:
+                chunk_end = chunk_start.replace(month=chunk_start.month + 1, day=1) - timedelta(days=1)
+            if chunk_end > end:
+                chunk_end = end
+
+            logger.info(f"Searching {chunk_start.strftime('%Y-%m-%d')} → {chunk_end.strftime('%Y-%m-%d')}...")
+            incidents = self.search_incidents(
+                start_date=chunk_start.strftime("%Y-%m-%d"),
+                end_date=chunk_end.strftime("%Y-%m-%d"),
+                closed_only=closed_only,
+                **filters,
+            )
+            logger.info(f"  Found {len(incidents)} incidents")
+            all_incidents.extend(incidents)
+
+            # Move to next month
+            chunk_start = chunk_end + timedelta(days=1)
+
+        return all_incidents
+
     # ── Detailed API ──────────────────────────────────────────────────
 
-    def get_incident_detailed(self, incident_number: str) -> Optional[Dict[str, Any]]:
+    def get_incident_detailed(self, incident_number: str) -> dict[str, Any] | None:
         """Fetch full incident with work notes via DT custom API."""
         resp = requests.get(
             f"{self.instance_url}/api/ditci/v1/servicenow/incident/{incident_number}/detailed",
@@ -143,8 +257,8 @@ class ServiceNowClient:
         query: str,
         batch_size: int = 200,
         max_total: int = None,
-        fields: List[str] = None,
-    ) -> List[Dict[str, Any]]:
+        fields: list[str] = None,
+    ) -> list[dict[str, Any]]:
         """
         Fetch incidents in batches with automatic pagination.
         Yields progress logs.
@@ -180,7 +294,7 @@ class ServiceNowClient:
         logger.info(f"Fetched {len(all_incidents)} incidents total")
         return all_incidents
 
-    def fetch_work_notes(self, sys_id: str) -> List[Dict[str, Any]]:
+    def fetch_work_notes(self, sys_id: str) -> list[dict[str, Any]]:
         """Fetch work notes and comments for an incident by sys_id."""
         notes = []
 

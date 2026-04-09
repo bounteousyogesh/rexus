@@ -1,0 +1,273 @@
+{
+  "review_type": "enhanced",
+  "review_date": "2026-04-07",
+  "reviewer": "claude-sonnet-4-6",
+  "scope": {
+    "api_contracts": "backend/api/routers/ vs frontend/src/api.ts",
+    "ui_components": "frontend/src/pages/",
+    "database": "backend/migrations/",
+    "framework": "FastAPI + React + pgvector"
+  },
+  "gate": {
+    "passed": false,
+    "critical_count": 2,
+    "high_count": 6,
+    "medium_count": 7,
+    "low_count": 5,
+    "note": "Gate requires 0 critical and 0 high. 2 critical and 6 high findings must be resolved."
+  },
+  "findings": [
+    {
+      "id": "ENH-001",
+      "severity": "CRITICAL",
+      "review_type": "enhanced",
+      "category": "API Contract — Type Mismatch",
+      "file": "frontend/src/api.ts",
+      "line": 121,
+      "backend_file": "backend/api/routers/search.py",
+      "backend_line": 27,
+      "description": "The frontend SearchResult interface declares `weighted_score: number` as a required field on each result item. The v2 rexus_find_similar function (migration 002_enriched_schema.sql) no longer returns weighted_score — it was dropped when recency_weight was removed in the schema rewrite. The backend search router returns only: incident_id, incident_number, short_description, close_notes, similarity_score, cluster_id. The `weighted_score` field will always be `undefined` at runtime, but TypeScript treats it as `number`, masking the deserialization gap. Any frontend logic that reads or displays `r.weighted_score` will silently render `undefined` rather than a number.",
+      "impact": "Type contract violation causes silent data corruption at the API boundary. If weighted_score is ever used for UI display or sorting, it will produce NaN or undefined without a runtime error, hiding the root cause.",
+      "recommendation": "Remove `weighted_score: number` from the SearchResult interface in api.ts, or add it as optional (`weighted_score?: number`). If the field is genuinely needed, restore it to the rexus_find_similar function in a migration. Example fix in api.ts:\n```typescript\nresults: {\n  incident_id: number;\n  incident_number: string;\n  short_description: string;\n  close_notes?: string;\n  similarity_score: number;\n  cluster_id?: number;\n}[];\n```"
+    },
+    {
+      "id": "ENH-002",
+      "severity": "CRITICAL",
+      "review_type": "enhanced",
+      "category": "Database — Missing Extension",
+      "file": "backend/api/routers/analyze.py",
+      "line": 567,
+      "backend_file": "backend/migrations/001_rexus_schema.sql",
+      "backend_line": 4,
+      "description": "The /analyze endpoint uses pg_trgm operators (`%` trigram match and `similarity()` function) on rexus_incidents_v3 for hybrid search (lines 567-572 of analyze.py). Neither migration file (001_rexus_schema.sql nor 002_enriched_schema.sql) includes `CREATE EXTENSION IF NOT EXISTS pg_trgm`. The pgvector extension is created but pg_trgm is not. rexus_incidents_v3 is created via a script (load_enriched_v3.py) that also does not enable pg_trgm. In a fresh deployment the trigram operators will fail with: `ERROR: operator does not exist: text % unknown`. This silently degrades the hybrid search to vector-only when the exception is caught, but on databases where pg_trgm is absent entirely it will cause a 500 error.",
+      "impact": "Critical: a fresh deployment missing pg_trgm causes the keyword search branch of hybrid matching to error. The exception is caught (`keyword_results = []`) so it is silent in analysis results, but the system silently operates at reduced accuracy. In environments where pg_trgm is absent, this crashes the entire /analyze endpoint.",
+      "recommendation": "Add `CREATE EXTENSION IF NOT EXISTS pg_trgm;` to migration 002_enriched_schema.sql (and any future migration that creates the v3 table). Also add a GIN trigram index to improve performance:\n```sql\nCREATE EXTENSION IF NOT EXISTS pg_trgm;\nCREATE INDEX IF NOT EXISTS idx_rexus_incidents_v3_short_desc_trgm\n  ON rexus_incidents_v3 USING gin (short_description gin_trgm_ops);\n```"
+    },
+    {
+      "id": "ENH-003",
+      "severity": "HIGH",
+      "review_type": "enhanced",
+      "category": "API Contract — Missing endpoint registration",
+      "file": "frontend/src/api.ts",
+      "line": 197,
+      "backend_file": "backend/api/main.py",
+      "backend_line": 89,
+      "description": "The frontend api.ts defines `analyzeIncident` which calls `POST /analyze/incident/{incidentNumber}?limit=...&threshold=...` with an empty POST body (line 198). The backend endpoint at analyze.py line 851 accepts this path and processes it correctly. However the route is declared AFTER the route `/analyze/text` in the same file. FastAPI matches routes in order — `POST /analyze/text` and `POST /analyze/{incident_number}` where incident_number could match the literal string 'text'. FastAPI actually handles this correctly since path parameters are matched only when the literal path does not match, but the frontend passes `limit` and `threshold` as query parameters in the URL directly on a POST request (line 198: `?limit=${limit}&threshold=0.4` appended to the path). This is valid FastAPI behavior but is non-idiomatic — these should be declared as Query parameters in the Pydantic model or as function parameters, not embedded in the frontend URL string.",
+      "impact": "Medium risk: works in current implementation but is fragile. If the backend signature changes to use a request body for limit/threshold, the frontend call will silently pass empty values and use defaults. The inconsistency between how /analyze accepts limit (in body) vs /analyze/incident/{n} accepts limit (in query string) creates a maintenance trap.",
+      "recommendation": "Standardize: either accept limit/threshold as query params on all analyze endpoints (consistent with /search), or accept them all in the request body. Update api.ts to match:\n```typescript\n// Option A: query params on all analyze endpoints\nanalyzeIncident: (incidentNumber: string, limit = 15) =>\n  post<AnalyzeResult>(`/analyze/incident/${encodeURIComponent(incidentNumber)}`, { limit, threshold: 0.4 }),\n```\nThen update the backend to accept `limit: int = Query(15)` and `threshold: float = Query(0.40)` as explicit query params."
+    },
+    {
+      "id": "ENH-004",
+      "severity": "HIGH",
+      "review_type": "enhanced",
+      "category": "API Contract — Inconsistent error response format",
+      "file": "backend/api/main.py",
+      "line": 64,
+      "description": "The global exception handler returns `{\"error\": \"Internal server error\"}` for unhandled exceptions. FastAPI's built-in validation errors return `{\"detail\": [{\"loc\": [...], \"msg\": ..., \"type\": ...}]}`. HTTPExceptions raised in routers return `{\"detail\": \"message\"}`. The rate limiter (slowapi) returns a different format again. The frontend's generic error handler in api.ts only does `throw new Error(\\`API error: ${res.status}\\`)` — it never inspects the response body to extract the error message. This means validation errors (422), rate limit errors (429), and application errors (404, 400, 503) all surface to the UI as generic `\"API error: 422\"` messages with no actionable context.",
+      "impact": "High: users see opaque error messages. The Analyze page special-cases 404 and 503 (lines 95-99 of Analyze.tsx) but only by matching the status code string in the error message — which is fragile. All other error types including validation failures are completely opaque.",
+      "recommendation": "1. Standardize all error responses to `{\"error\": \"message\", \"code\": \"ERROR_CODE\"}` format. 2. Update the generic `get<T>` and `post<T>` helpers in api.ts to parse the error body:\n```typescript\nasync function get<T>(path: string): Promise<T> {\n  const res = await fetch(`${BASE}${path}`);\n  if (!res.ok) {\n    const body = await res.json().catch(() => ({}));\n    throw new Error(body.detail || body.error || `API error: ${res.status}`);\n  }\n  return res.json();\n}\n```"
+    },
+    {
+      "id": "ENH-005",
+      "severity": "HIGH",
+      "review_type": "enhanced",
+      "category": "Database — Table versioning without migration",
+      "file": "backend/api/routers/analyze.py",
+      "line": 541,
+      "description": "The /analyze endpoint queries `rexus_incidents_v3` but this table is not created in any migration file. It is created by a Python script (`backend/scripts/load_enriched_v3.py` line 213) using `CREATE TABLE IF NOT EXISTS rexus_incidents_v3 (LIKE rexus_incidents INCLUDING ALL)`. The sync router uses `rexus_incidents_v2` (also not in migrations). The health router references `rexus_incidents_v3`. The main incidents/analytics/playbooks routers use `rexus_incidents` (v1). Three different production tables are in active use simultaneously, none of the v2/v3 tables are tracked in the official migration system, and there is no documented relationship between them. A fresh deployment following only the migration files will have no data in v3 and the /analyze endpoint will return 0 results.",
+      "impact": "High: deployment reliability is broken. A new environment set up from migrations alone will have a non-functional /analyze endpoint. This is a production incident waiting to happen during disaster recovery or environment promotion.",
+      "recommendation": "Create a migration 004_incidents_v3.sql that formally creates rexus_incidents_v3 (and optionally rexus_incidents_v2) with explicit column definitions, foreign key constraints, and indexes. Remove the ad-hoc CREATE in load_enriched_v3.py. Add a README or migration comment explaining the v1/v2/v3 table lineage and which endpoints use which table."
+    },
+    {
+      "id": "ENH-006",
+      "severity": "HIGH",
+      "review_type": "enhanced",
+      "category": "API Contract — ILIKE parameter reuse bug",
+      "file": "backend/api/routers/incidents.py",
+      "line": 41,
+      "description": "In the `list_incidents` handler, the ILIKE search condition is built as:\n```python\nconditions.append(f\"(short_description ILIKE ${idx} OR close_notes ILIKE ${idx})\")\nparams.append(f\"%{search}%\")\nidx += 1\n```\nBoth `short_description ILIKE ${idx}` and `close_notes ILIKE ${idx}` reference the same parameter index `$N` — this is correct in PostgreSQL because the same parameter can be referenced multiple times. However, `params.append` only adds one value. When the query is executed with asyncpg's `conn.fetch(f\"...\", *params, page_size, offset)`, the position-based parameter binding means the ILIKE clause uses one parameter slot but references it twice. In asyncpg this works because `$N` can appear multiple times referencing the same positional argument. However this is brittle — if a developer refactors this to use `$idx` and `$(idx+1)` while only appending once, it will silently bind the wrong parameter. Additionally, no index exists on `close_notes` so the ILIKE scan on close_notes is a full sequential scan on that TEXT column.",
+      "impact": "High: the close_notes ILIKE search causes a full table scan on an unindexed TEXT column. At scale with 10k+ incidents this will cause multi-second query times and block the connection pool.",
+      "recommendation": "1. Add a GIN index for full-text search on both columns:\n```sql\nCREATE INDEX IF NOT EXISTS idx_rexus_incidents_fts\n  ON rexus_incidents USING gin(to_tsvector('english', short_description || ' ' || COALESCE(close_notes, '')));\n```\n2. Replace ILIKE with full-text search:\n```sql\nWHERE to_tsvector('english', short_description || ' ' || COALESCE(close_notes, '')) @@ plainto_tsquery('english', $N)\n```"
+    },
+    {
+      "id": "ENH-007",
+      "severity": "HIGH",
+      "review_type": "enhanced",
+      "category": "Framework-specific — Missing trigram index for hybrid search",
+      "file": "backend/api/routers/analyze.py",
+      "line": 563,
+      "backend_file": "backend/migrations/002_enriched_schema.sql",
+      "backend_line": 211,
+      "description": "The /analyze endpoint performs trigram similarity search on rexus_incidents_v3.short_description (line 567-572) using `short_description % $1` and `ORDER BY similarity(short_description, $1) DESC`. No GIN trigram index exists on rexus_incidents_v3.short_description in any migration. Without a gin_trgm_ops index, PostgreSQL must compute trigram similarity for every row in the table — this is O(n) and will take hundreds of milliseconds on a table with thousands of rows. The keyword search branch runs for every /analyze call where `raw_query` is non-empty (i.e., nearly all PDF/SN fetched tickets).",
+      "impact": "High: every analysis call that has a short description does a full table scan for trigram matching. At 5k+ incidents this adds 200-500ms latency to every analysis. Worsens quadratically with table growth.",
+      "recommendation": "Add a migration step to create GIN trigram index on the v3 table:\n```sql\nCREATE EXTENSION IF NOT EXISTS pg_trgm;\nCREATE INDEX IF NOT EXISTS idx_rexus_incidents_v3_trgm\n  ON rexus_incidents_v3 USING gin (short_description gin_trgm_ops);\n```\nAlso set `pg_trgm.similarity_threshold = 0.3` (or use `SET LOCAL` per transaction) to avoid scanning rows with no chance of matching."
+    },
+    {
+      "id": "ENH-008",
+      "severity": "HIGH",
+      "review_type": "enhanced",
+      "category": "API Contract — Health endpoint path mismatch",
+      "file": "frontend/src/api.ts",
+      "line": 144,
+      "backend_file": "backend/api/main.py",
+      "backend_line": 80,
+      "description": "The frontend api.health() calls `fetch('/health')` — note: NO `/api/v1` prefix. The health router is registered WITHOUT a prefix (`app.include_router(health.router)` at line 80 of main.py), so the route is `/health`, which matches. However, the detailed health endpoint `/health/detailed` is never called from the frontend. More critically, the health check is called with a raw `fetch('/health')` bypassing the centralized `get<T>()` helper — it duplicates the error handling pattern inline. The inconsistency means the health endpoint does not benefit from future improvements to the central error handler.",
+      "impact": "Medium-High: The health endpoint works but is architecturally inconsistent. If the health router is ever moved to the `/api/v1` prefix (for consistency), the frontend call will silently get a 404 and the UI health indicator will break without a type error to warn about it.",
+      "recommendation": "Either: (a) create a dedicated `healthCheck()` helper that explicitly calls `/health` with a comment explaining it has no prefix, or (b) register the health router under `/api/v1` and update the frontend call to `${BASE}/health`. Document the intentional prefix exception."
+    },
+    {
+      "id": "ENH-009",
+      "severity": "MEDIUM",
+      "review_type": "enhanced",
+      "category": "UI/Component — Missing error state in Incidents page",
+      "file": "frontend/src/pages/Incidents.tsx",
+      "line": 16,
+      "description": "The `load()` callback in IncidentsPage uses a try/finally pattern but no catch for errors — line 44 has an empty `catch {}` block. When the API call fails (network error, 500, etc.), the component silently stays in the loading state with `loading: false` and `data: null`. The template renders nothing for the table body and shows 'Loading...' in the description. There is no error state variable, no error display, and no retry mechanism. The user sees a blank table with no indication of what went wrong.",
+      "impact": "Medium: poor user experience on API failures. The Dashboard page (correctly) has an error state with AlertCircle display; Incidents page does not follow the same pattern.",
+      "recommendation": "Add an error state and display it:\n```typescript\nconst [error, setError] = useState<string | null>(null);\n\nconst load = useCallback(async () => {\n  setLoading(true);\n  setError(null);\n  try {\n    const result = await api.incidents({ ... });\n    setData(result);\n  } catch (err) {\n    setError(err instanceof Error ? err.message : 'Failed to load incidents');\n  } finally {\n    setLoading(false);\n  }\n}, [page, searchSubmitted, category, cmdbCi]);\n\n// In JSX:\n{error && <div className=\"text-red-600\">{error}</div>}\n```"
+    },
+    {
+      "id": "ENH-010",
+      "severity": "MEDIUM",
+      "review_type": "enhanced",
+      "category": "UI/Component — Missing error state in Clusters page",
+      "file": "frontend/src/pages/Clusters.tsx",
+      "line": 21,
+      "description": "The `load()` callback in ClustersPage similarly has no error handling — it uses try/finally but the catch block is absent (inferred from the same pattern as IncidentsPage). The `openCluster()` function (line 33) makes an API call with no try/catch at all. If `api.cluster(id)` throws (e.g., network error or 404), the unhandled promise rejection propagates without user feedback. The cluster detail drawer will remain open but empty.",
+      "impact": "Medium: unhandled promise rejections in React produce console errors and in some environments crash the error boundary. Users clicking a cluster card that 404s see no feedback.",
+      "recommendation": "Wrap `openCluster` in try/catch and add an error state:\n```typescript\nconst [clusterError, setClusterError] = useState<string | null>(null);\n\nconst openCluster = async (id: number) => {\n  setClusterError(null);\n  try {\n    const detail = await api.cluster(id);\n    setSelected(detail as ClusterDetail);\n  } catch (err) {\n    setClusterError(err instanceof Error ? err.message : 'Failed to load cluster');\n  }\n};\n```"
+    },
+    {
+      "id": "ENH-011",
+      "severity": "MEDIUM",
+      "review_type": "enhanced",
+      "category": "UI/Component — Accessibility: no keyboard navigation on interactive rows",
+      "file": "frontend/src/pages/Incidents.tsx",
+      "line": 139,
+      "description": "Table rows in IncidentsPage, ClustersPage grid cards, and the similar_incidents table in Analyze.tsx use `onClick` handlers for navigation/detail display but have no keyboard event handlers (`onKeyDown`), no `tabIndex`, and no `role` attributes. Screen readers cannot identify these as interactive elements. The `<details>`/`<summary>` element in Analyze.tsx (line 284) is more accessible but cluster cards and incident rows are not. No `aria-label` is present on any interactive icon-only button (Copy button, mic button).",
+      "impact": "Medium: the application is inaccessible to keyboard-only and screen-reader users. WCAG 2.1 AA requires interactive elements to be keyboard-operable.",
+      "recommendation": "1. Add `role=\"button\" tabIndex={0} onKeyDown={(e) => e.key === 'Enter' && handler()}` to all clickable divs/trs.\n2. Add `aria-label` to icon-only buttons:\n```tsx\n<button aria-label=\"Copy problem ID\" onClick={...}>\n  <Copy size={16} />\n</button>\n```\n3. Consider replacing clickable `<tr>` with `<button>` elements or adding `scope` to table headers."
+    },
+    {
+      "id": "ENH-012",
+      "severity": "MEDIUM",
+      "review_type": "enhanced",
+      "category": "UI/Component — State initialization order in Analyze.tsx",
+      "file": "frontend/src/pages/Analyze.tsx",
+      "line": 26,
+      "description": "In AnalyzePage, the `handleFileUpload` function (line 26) calls `setError('')` and `setStep('parsing')` before these state variables are declared. `error` and `step` are declared at lines 46-48 with `useState`. In React, hooks must be called in the same order every render and must all be declared before any function that uses them — the function declaration at line 26 references `setError` and `setStep` which are closures over variables declared later in the component body. While JavaScript hoisting means this technically works at runtime (the `useState` calls all execute before `handleFileUpload` is ever invoked), this is a React anti-pattern and will confuse static analysis tools. ESLint's `react-hooks/rules-of-hooks` and TypeScript strict mode may flag this.",
+      "impact": "Medium: confuses developers and static analysis. If refactoring moves the function definitions, the hook ordering could be violated, causing React's rules-of-hooks invariant to fail.",
+      "recommendation": "Move all `useState` declarations to the top of the component, before any function definitions that reference them:\n```typescript\nexport default function AnalyzePage() {\n  // All state declarations first\n  const [incNumber, setIncNumber] = useState('INC2239275');\n  const [step, setStep] = useState<Step>('idle');\n  const [error, setError] = useState('');\n  // ... all other useState calls ...\n  \n  // Then function definitions\n  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => { ... };\n```"
+    },
+    {
+      "id": "ENH-013",
+      "severity": "MEDIUM",
+      "review_type": "enhanced",
+      "category": "Database — Missing index on analysis_log for incident lookup",
+      "file": "backend/migrations/002_enriched_schema.sql",
+      "line": 231,
+      "description": "The rexus_analysis_log table has `idx_analysis_log_created` on `created_at` but no index on `incident_number`. The /analysis-log endpoint does not filter by incident_number, but the progressive learning path in analyze.py (line 540) does `SELECT id FROM rexus_incidents_v3 WHERE incident_number = $1` — which has a unique index and is fine. However, the feedback table (rexus_feedback) has `analysis_id` indexed but no index on `incident_number`. The `list_feedback` query at feedback.py line 50 does a JOIN between rexus_feedback and rexus_analysis_log on `analysis_id` but the query uses a LEFT JOIN ordering by `f.created_at`, and with no index on `f.analysis_id` being the foreign key target... wait: `idx_feedback_analysis` exists (line 232). However `rexus_feedback.incident_number` has no index and future queries filtering by incident_number would do a full scan.",
+      "impact": "Medium: no immediate impact, but as feedback grows, any future feature that looks up feedback by incident_number (e.g., 'show all feedback for INC123') will do a full table scan.",
+      "recommendation": "Add a preventive index:\n```sql\nCREATE INDEX IF NOT EXISTS idx_feedback_incident\n  ON rexus_feedback (incident_number)\n  WHERE incident_number IS NOT NULL;\n\nCREATE INDEX IF NOT EXISTS idx_analysis_log_incident\n  ON rexus_analysis_log (incident_number)\n  WHERE incident_number IS NOT NULL;\n```"
+    },
+    {
+      "id": "ENH-014",
+      "severity": "MEDIUM",
+      "review_type": "enhanced",
+      "category": "Framework-specific — Pydantic model used but response_model is dict in AnalyzeResponse",
+      "file": "backend/api/routers/analyze.py",
+      "line": 502,
+      "description": "The `AnalyzeResponse` Pydantic model (line 502) declares `similar_incidents: list[dict]` and `focused_playbook: dict` — these are untyped dict fields that bypass Pydantic's serialization and validation. The response model is declared but provides no benefit for these two key fields which carry the bulk of the response payload. Additionally, `dominant_cluster: Optional[dict]` means null values or wrong shapes from DB queries will not be caught at the serialization boundary. FastAPI's `response_model=AnalyzeResponse` will validate the top-level keys but pass through the dicts unvalidated.",
+      "impact": "Medium: the purpose of `response_model` is schema enforcement and documentation. With `list[dict]` and `dict` types, the OpenAPI schema shows generic objects, reducing API discoverability and allowing malformed inner objects to reach clients.",
+      "recommendation": "Replace the untyped dict fields with proper Pydantic models:\n```python\nclass SimilarIncident(BaseModel):\n    incident_number: str\n    short_description: str\n    similarity_score: float\n    cluster_id: Optional[int] = None\n    cmdb_ci: Optional[str] = None\n    close_notes: Optional[str] = None\n\nclass AnalyzeResponse(BaseModel):\n    analysis_id: Optional[int] = None\n    cleaned_issue: str\n    confidence_score: float\n    incident_exists: bool\n    incident_number: Optional[str] = None\n    match_count: int\n    similar_incidents: list[SimilarIncident]\n    dominant_cluster: Optional[DominantCluster] = None\n    focused_playbook: FocusedPlaybookResult\n    resolution_patterns: list[ResolutionPattern]\n```"
+    },
+    {
+      "id": "ENH-015",
+      "severity": "MEDIUM",
+      "review_type": "enhanced",
+      "category": "Framework-specific — Connection pool exhaustion during sync import",
+      "file": "backend/api/routers/sync.py",
+      "line": 392,
+      "description": "The `sync_import` endpoint processes up to 50 incidents sequentially in a loop (lines 392-468). For each incident it calls `pool.acquire()` twice: once for the DB insert (line 422) and once via `track_usage()` (line 420). With `max_size=10` in the connection pool and the pool also being used by concurrent requests, each sequential iteration holds a pool connection for the duration of the `embed_text` call (which can take 200-500ms over the network). If 2+ concurrent sync imports run (the rate limiter allows 5/minute total), the pool can be saturated. More critically, the `asyncio.to_thread` calls for ServiceNow fetch (line 396) do not have timeouts — a slow ServiceNow response will hold the connection for the entire HTTP timeout duration (no timeout set).",
+      "impact": "Medium: pool saturation under concurrent load. ServiceNow calls without timeout can cause connection pool starvation lasting 30+ seconds.",
+      "recommendation": "1. Add timeout to ServiceNow fetch calls:\n```python\ndata = await asyncio.wait_for(\n    asyncio.to_thread(sn_client.get_incident_detailed, inc_num),\n    timeout=30.0\n)\n```\n2. Batch DB inserts instead of per-incident inserts. 3. Reduce pool acquire contention by doing track_usage outside the main processing loop."
+    },
+    {
+      "id": "ENH-016",
+      "severity": "LOW",
+      "review_type": "enhanced",
+      "category": "API Contract — Pagination pages=0 when total=0",
+      "file": "backend/api/routers/incidents.py",
+      "line": 65,
+      "description": "The incidents router computes `pages` as `(total + page_size - 1) // page_size` without a `max(1, ...)` guard. When `total = 0`, this returns `pages = 0`. The frontend checks `data.pages > 1` for pagination controls (line 166 of Incidents.tsx) so the pagination is hidden when there are no results — which is correct behavior. However some routers use `max(1, ...)` (playbooks.py, feedback.py) and others do not (incidents.py, clusters.py). This inconsistency means the frontend cannot rely on `pages >= 1` as an invariant.",
+      "impact": "Low: no user-visible bug currently, but the inconsistency is a latent defect if frontend code ever checks `pages === 0` as an error condition.",
+      "recommendation": "Standardize all paginated endpoints to use `max(1, (total + page_size - 1) // page_size)` as used in playbooks.py and feedback.py. Update incidents.py line 65 and clusters.py line 42."
+    },
+    {
+      "id": "ENH-017",
+      "severity": "LOW",
+      "review_type": "enhanced",
+      "category": "UI/Component — Hardcoded category and CMDB options in Incidents page",
+      "file": "frontend/src/pages/Incidents.tsx",
+      "line": 83,
+      "description": "The category and CMDB CI filter dropdowns in IncidentsPage are hardcoded with a fixed set of values (Software, Network, Hardware, Information Security; GK POS, SAP OMS, Vision Service Now Order Updates, etc.). The available categories and CMDB CIs are already returned by `GET /analytics` via `data.categories[]` and `data.top_cmdb_cis[]`. The comment at line 83 acknowledges this (CQ-017) but the fix has not been implemented. Hardcoded lists will become stale as new categories and systems are added to the incident database.",
+      "impact": "Low: users cannot filter by new categories or systems added after deployment without a frontend code change.",
+      "recommendation": "Fetch dynamic options from the analytics API on component mount:\n```typescript\nuseEffect(() => {\n  api.analytics().then(d => {\n    setAvailableCategories(d.categories.map(c => c.category));\n    setAvailableCmdbCis(d.top_cmdb_cis.map(c => c.cmdb_ci));\n  }).catch(() => {}); // fallback to hardcoded if fetch fails\n}, []);\n```"
+    },
+    {
+      "id": "ENH-018",
+      "severity": "LOW",
+      "review_type": "enhanced",
+      "category": "Database — Missing partial index for embedded incidents",
+      "file": "backend/migrations/002_enriched_schema.sql",
+      "line": 218,
+      "description": "The analytics query `COUNT(*) FILTER (WHERE embedding IS NOT NULL)` (analytics.py line 19) and the sync status query `COUNT(*) FROM rexus_incidents_v2 WHERE embedding IS NOT NULL` (sync.py line 216) both scan the full incidents table. A partial index on embedded rows would make these COUNT queries significantly faster, but more importantly, the HNSW vector search in rexus_find_similar already filters `WHERE ri.embedding IS NOT NULL` — the HNSW index handles this naturally. The missing optimization is for the COUNT aggregations that cannot use the vector index.",
+      "impact": "Low: COUNT queries with embedding IS NOT NULL filter do a full index scan on the HNSW index rather than a targeted lookup. Minor performance impact at current scale.",
+      "recommendation": "Add a partial B-tree index:\n```sql\nCREATE INDEX IF NOT EXISTS idx_rexus_incidents_embedded\n  ON rexus_incidents (id) WHERE embedding IS NOT NULL;\n```\nThis allows COUNT(*) FILTER (WHERE embedding IS NOT NULL) to use an index-only scan."
+    },
+    {
+      "id": "ENH-019",
+      "severity": "LOW",
+      "review_type": "enhanced",
+      "category": "Framework-specific — boto3 client not thread-safe as module-level singleton",
+      "file": "backend/api/utils/llm_provider.py",
+      "line": 39,
+      "description": "The boto3 bedrock-runtime client is stored as a module-level global `_boto_client` (line 39) and initialized in `_get_boto_client()`. boto3 clients are NOT thread-safe for concurrent use. While asyncio's event loop is single-threaded, the `asyncio.to_thread()` calls in `_bedrock_chat` and `_bedrock_embed` (lines 80, 112) invoke boto3 methods in the thread pool. Multiple concurrent `asyncio.to_thread()` calls will use the same boto3 client from different threads simultaneously, which can cause connection errors or data corruption in boto3's internal connection pool.",
+      "impact": "Low in development (OpenAI provider is default), HIGH in AWS production with Bedrock provider. Under concurrent requests, the shared boto3 client in threads can produce `BotoCoreError` or connection pool exhaustion.",
+      "recommendation": "Create a new boto3 client per thread call, or use a thread-local client, or use boto3's built-in thread safety via a Lock:\n```python\nimport threading\n_boto_lock = threading.Lock()\n\ndef _get_boto_client():\n    with _boto_lock:\n        global _boto_client\n        if _boto_client is None:\n            import boto3\n            _boto_client = boto3.client(\"bedrock-runtime\", region_name=AWS_REGION)\n    return _boto_client\n```\nOr better: create a new boto3 session and client per invocation within `asyncio.to_thread`."
+    },
+    {
+      "id": "ENH-020",
+      "severity": "LOW",
+      "review_type": "enhanced",
+      "category": "UI/Component — SyncPage importResults uses array index as React key",
+      "file": "frontend/src/pages/SyncPage.tsx",
+      "line": 328,
+      "description": "The import results list renders with `key={i}` where `i` is the array index from `.map((r, i) => ...)` (line 328). When new results are appended to the array (`setImportResults(prev => [...prev, ...(data.results)])`), React reconciles using the numeric index as key. If results are added in batches, index-keyed items can cause stale renders. The correct key should be `r.incident` (the incident number) which is unique and stable.",
+      "impact": "Low: cosmetic React reconciliation issue. Does not cause incorrect data display in current implementation but is a React best practices violation.",
+      "recommendation": "Use the incident number as the key:\n```tsx\n{importResults.map((r) => (\n  <div key={r.incident} className={...}>\n```"
+    }
+  ],
+  "summary": {
+    "by_severity": {
+      "CRITICAL": 2,
+      "HIGH": 6,
+      "MEDIUM": 7,
+      "LOW": 5
+    },
+    "by_review_type": {
+      "api_contract": 6,
+      "ui_component": 5,
+      "database": 4,
+      "framework_specific": 5
+    },
+    "key_themes": [
+      "Three active production table versions (rexus_incidents, v2, v3) with no formal migrations for v2/v3",
+      "Missing pg_trgm extension causes silent degradation or crash in hybrid search",
+      "Frontend SearchResult type declares weighted_score that no longer exists in backend",
+      "Inconsistent error response format across error types means all API errors are opaque in the UI",
+      "Accessibility: no keyboard navigation or ARIA attributes on any interactive element",
+      "Missing trigram GIN index causes full table scans on every analysis call"
+    ]
+  }
+}

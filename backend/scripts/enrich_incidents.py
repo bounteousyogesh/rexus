@@ -1,17 +1,19 @@
 """
 REX-US — Enriched Incident Fetcher
 
-Fetches full incident data from ServiceNow API including:
-- All standard + custom fields (52 fields)
-- Work notes (from incident record directly)
-- Structured fields: u_jira_number, u_order_number, business_duration, etc.
+Fetches full incident data from ServiceNow using the DT Detailed API:
+  GET /api/ditci/v1/servicenow/incident/{number}/detailed
+
+Returns structured response with sections: incident, notes, resolution,
+order_data, contact, operational_metrics, related_records, etc.
 
 Saves enriched data as JSON, ready for embedding generation.
 
 Usage:
-    python enrich_incidents.py --split training --batch-size 200
-    python enrich_incidents.py --split wave_1 --batch-size 200
-    python enrich_incidents.py --split all --batch-size 200
+    python enrich_incidents.py --split training --batch-size 50
+    python enrich_incidents.py --split wave_1
+    python enrich_incidents.py --split all
+    python enrich_incidents.py --split all --resume  # resume from last checkpoint
 """
 
 import os
@@ -36,41 +38,6 @@ from backend.services.servicenow_client import ServiceNowClient
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-# Fields to fetch from ServiceNow — the full enriched set
-ENRICHED_FIELDS = [
-    # Identity
-    'sys_id', 'number', 'short_description', 'description',
-    # Classification
-    'category', 'subcategory', 'priority', 'severity', 'impact', 'urgency',
-    'state', 'incident_state',
-    # Assignment
-    'assignment_group', 'assigned_to', 'cmdb_ci', 'business_service',
-    'caller_id', 'location', 'company', 'contact_type',
-    'opened_by', 'closed_by',
-    # Resolution
-    'close_notes', 'close_code',
-    'u_resolution_confirmed_by', 'u_resolved_by',
-    'resolution_code',
-    # Dates
-    'opened_at', 'resolved_at', 'closed_at',
-    # Duration metrics
-    'business_duration', 'business_stc', 'calendar_duration', 'calendar_stc',
-    # Operational
-    'reassignment_count', 'reopen_count',
-    'made_sla', 'escalation',
-    # Problem & related
-    'problem_id', 'parent_incident', 'caused_by',
-    # Order data (DT custom)
-    'u_order_number', 'u_total_order_amount', 'u_order_type', 'u_order_date',
-    'u_financial_impact', 'u_correction', 'u_correction_type', 'u_error_category',
-    # JIRA
-    'u_jira_number',
-    # Project
-    'u_related_project',
-    # Work notes (concatenated from record)
-    'work_notes', 'comments',
-]
-
 
 def get_db():
     url = os.getenv("DATABASE_URL", "").replace("+asyncpg", "").replace("postgresql://", "http://")
@@ -82,67 +49,47 @@ def get_db():
     )
 
 
-def flatten_display_value(val):
-    """Extract display_value from ServiceNow response objects."""
-    if isinstance(val, dict):
-        return val.get('display_value', '')
-    return val
+def fetch_batch(client, incident_numbers, checkpoint_file=None, existing=None):
+    """
+    Fetch incidents one at a time using the DT Detailed API.
+    Saves checkpoint every 50 incidents for resume support.
+    """
+    all_results = existing or {}
+    failed = []
+    total = len(incident_numbers)
 
-
-def fetch_batch(client, incident_numbers, batch_size=50):
-    """Fetch incidents in sub-batches using sysparm_query with IN clause."""
-    all_results = {}
-
-    for i in range(0, len(incident_numbers), batch_size):
-        batch = incident_numbers[i:i + batch_size]
-        query = "numberIN" + ",".join(batch)
+    for i, inc_num in enumerate(incident_numbers):
+        if inc_num in all_results:
+            continue
 
         try:
-            results = client.query_table(
-                'incident',
-                query=query,
-                fields=ENRICHED_FIELDS,
-                limit=batch_size,
-                display_value=True,
-            )
-
-            for r in results:
-                flat = {}
-                for k, v in r.items():
-                    flat[k] = flatten_display_value(v)
-                num = flat.get('number', '')
-                if num:
-                    all_results[num] = flat
-
+            data = client.get_incident_detailed(inc_num)
+            if data:
+                all_results[inc_num] = data
+            else:
+                logger.warning(f"  {i+1}/{total} {inc_num}: not found in ServiceNow")
+                failed.append(inc_num)
         except Exception as e:
-            logger.error(f"  Batch fetch error at offset {i}: {e}")
-            # Retry individually
-            for inc_num in batch:
-                try:
-                    results = client.query_table(
-                        'incident',
-                        query=f'number={inc_num}',
-                        fields=ENRICHED_FIELDS,
-                        limit=1,
-                        display_value=True,
-                    )
-                    if results:
-                        flat = {k: flatten_display_value(v) for k, v in results[0].items()}
-                        all_results[flat.get('number', inc_num)] = flat
-                except Exception as e2:
-                    logger.error(f"    Individual fetch failed for {inc_num}: {e2}")
+            logger.error(f"  {i+1}/{total} {inc_num}: ERROR — {e}")
+            failed.append(inc_num)
+            time.sleep(1)  # back off on error
 
-        if (i + batch_size) % 500 == 0 or i + batch_size >= len(incident_numbers):
-            logger.info(f"  Fetched {min(i + batch_size, len(incident_numbers))}/{len(incident_numbers)} "
-                       f"({len(all_results)} successful)")
+        if (i + 1) % 10 == 0 or i + 1 == total:
+            logger.info(f"  Fetched {i+1}/{total} ({len(all_results)} successful, {len(failed)} failed)")
 
-    return all_results
+        # Checkpoint every 50 incidents
+        if checkpoint_file and (i + 1) % 50 == 0:
+            with open(checkpoint_file, 'w') as f:
+                json.dump({"fetched": list(all_results.keys()), "failed": failed}, f)
+            logger.info(f"  Checkpoint saved: {len(all_results)} fetched")
+
+    return all_results, failed
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--split", default="training", help="Split group to fetch: training, wave_1, wave_2, ..., all")
-    parser.add_argument("--batch-size", type=int, default=50, help="API batch size")
+    parser.add_argument("--split", default="training", help="Split group: training, wave_1, ..., all")
+    parser.add_argument("--resume", action="store_true", help="Resume from checkpoint")
     parser.add_argument("--output-dir", default="data/enriched", help="Output directory")
     args = parser.parse_args()
 
@@ -151,9 +98,9 @@ def main():
     cur = conn.cursor()
 
     if args.split == "all":
-        cur.execute("SELECT incident_number FROM rexus_data_split ORDER BY row_rank")
+        cur.execute("SELECT incident_number FROM rexus_incidents ORDER BY opened_at")
     else:
-        cur.execute("SELECT incident_number FROM rexus_data_split WHERE split_group = %s ORDER BY row_rank",
+        cur.execute("SELECT incident_number FROM rexus_incidents WHERE split_group = %s ORDER BY opened_at",
                     (args.split,))
 
     incident_numbers = [row[0] for row in cur.fetchall()]
@@ -163,50 +110,91 @@ def main():
         logger.error(f"No incidents found for split '{args.split}'")
         return
 
-    logger.info(f"Fetching {len(incident_numbers)} incidents for split '{args.split}'")
+    logger.info(f"Found {len(incident_numbers)} incidents for split '{args.split}'")
+
+    # Output setup
+    output_dir = Path(__file__).parent.parent.parent / args.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_file = output_dir / f"enriched_{args.split}.json"
+    checkpoint_file = output_dir / f"checkpoint_{args.split}.json"
+
+    # Resume from checkpoint if requested
+    existing = {}
+    if args.resume and checkpoint_file.exists():
+        with open(checkpoint_file) as f:
+            ckpt = json.load(f)
+        already_done = set(ckpt.get("fetched", []))
+        logger.info(f"Resuming — {len(already_done)} already fetched")
+
+        # Load existing output file if it exists
+        if output_file.exists():
+            with open(output_file) as f:
+                prev_data = json.load(f)
+            if isinstance(prev_data, list):
+                for item in prev_data:
+                    num = item.get("incident", {}).get("number", "")
+                    if num:
+                        existing[num] = item
+            elif isinstance(prev_data, dict):
+                existing = prev_data
+            logger.info(f"Loaded {len(existing)} from existing output file")
 
     # Initialize ServiceNow client
     client = ServiceNowClient()
-    logger.info("ServiceNow client initialized")
+    logger.info("ServiceNow client initialized (using DT Detailed API)")
 
-    # Fetch in batches
+    # Fetch
     start = time.time()
-    enriched = fetch_batch(client, incident_numbers, batch_size=args.batch_size)
+    enriched, failed = fetch_batch(client, incident_numbers, checkpoint_file, existing)
     elapsed = time.time() - start
 
     logger.info(f"Fetch complete: {len(enriched)}/{len(incident_numbers)} in {elapsed:.0f}s "
                f"({elapsed/len(incident_numbers):.2f}s per incident)")
 
     # Save to file
-    output_dir = Path(__file__).parent.parent.parent / args.output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_file = output_dir / f"enriched_{args.split}.json"
-
     with open(output_file, 'w') as f:
         json.dump(list(enriched.values()), f, indent=2, default=str)
-
     logger.info(f"Saved to {output_file}")
 
-    # Summary stats
-    fields_filled = {}
-    for inc in enriched.values():
-        for k, v in inc.items():
-            if k not in fields_filled:
-                fields_filled[k] = 0
-            if v and str(v).strip() and str(v) not in ('None', '0', 'false'):
-                fields_filled[k] += 1
+    # Save failed list
+    if failed:
+        failed_file = output_dir / f"failed_{args.split}.json"
+        with open(failed_file, 'w') as f:
+            json.dump(failed, f, indent=2)
+        logger.info(f"Failed incidents ({len(failed)}) saved to {failed_file}")
 
+    # Clean up checkpoint on success
+    if checkpoint_file.exists() and not failed:
+        checkpoint_file.unlink()
+
+    # Summary
     logger.info(f"\n{'='*60}")
     logger.info(f"ENRICHMENT COMPLETE — {args.split}")
     logger.info(f"{'='*60}")
     logger.info(f"Incidents fetched: {len(enriched)}/{len(incident_numbers)}")
+    logger.info(f"Failed: {len(failed)}")
     logger.info(f"Time: {elapsed:.0f}s ({elapsed/60:.1f}min)")
-    logger.info(f"Key field fill rates:")
-    for field in ['work_notes', 'description', 'u_jira_number', 'u_order_number',
-                  'problem_id', 'business_duration', 'reassignment_count', 'u_correction_type']:
-        count = fields_filled.get(field, 0)
-        pct = count * 100 // len(enriched) if enriched else 0
-        logger.info(f"  {field}: {pct}% ({count}/{len(enriched)})")
+    logger.info(f"Rate: {elapsed/len(incident_numbers):.1f}s per incident")
+    logger.info(f"Output: {output_file}")
+
+    # Field fill rates from the structured response
+    if enriched:
+        sample = list(enriched.values())
+        checks = {
+            "work_notes": lambda d: len(d.get("notes", {}).get("work_notes", []) or []) > 0,
+            "comments": lambda d: len(d.get("notes", {}).get("comments", []) or []) > 0,
+            "close_notes": lambda d: bool(d.get("resolution", {}).get("close_notes")),
+            "problem_id": lambda d: bool(d.get("related_records", {}).get("problem_id_display")),
+            "u_jira_number": lambda d: bool(d.get("vendor", {}).get("u_jira_number") or d.get("related_records", {}).get("u_jira_number")),
+            "u_order_number": lambda d: bool(d.get("order_data", {}).get("u_order_number")),
+            "u_error_category": lambda d: bool(d.get("order_data", {}).get("u_error_category")),
+            "business_duration": lambda d: bool(d.get("operational_metrics", {}).get("business_duration")),
+        }
+        logger.info(f"Key field fill rates:")
+        for field, check in checks.items():
+            count = sum(1 for d in sample if check(d))
+            pct = count * 100 // len(sample) if sample else 0
+            logger.info(f"  {field}: {pct}% ({count}/{len(sample)})")
 
 
 if __name__ == "__main__":

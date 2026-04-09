@@ -62,7 +62,7 @@ async def list_incidents(
         "total": total,
         "page": page,
         "page_size": page_size,
-        "pages": (total + page_size - 1) // page_size,
+        "pages": max(1, (total + page_size - 1) // page_size),
         "items": [dict(r) for r in rows],
     }
 

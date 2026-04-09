@@ -1,6 +1,7 @@
 import json
 from fastapi import APIRouter, Query, HTTPException
 from backend.api.database import get_pool
+from backend.api.utils.llm_provider import get_provider_info
 
 router = APIRouter(tags=["analytics"])
 
@@ -212,3 +213,9 @@ async def get_token_usage(
         "by_endpoint": [dict(r) for r in by_endpoint],
         "daily_trend": [dict(r) for r in daily],
     }
+
+
+@router.get("/config/llm")
+async def get_llm_config():
+    """Current LLM provider configuration."""
+    return get_provider_info()

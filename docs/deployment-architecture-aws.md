@@ -22,9 +22,13 @@ graph TB
             PG[(PostgreSQL 16<br/>+ pgvector extension<br/>HNSW Vector Index)]
         end
 
-        subgraph AI["Amazon Bedrock / OpenAI API"]
-            EMB[text-embedding-3-small<br/>1536 dimensions]
-            GPT[GPT-5.4 / Claude Sonnet 4.6<br/>Playbook Generation]
+        subgraph AI["Amazon Bedrock"]
+            EMB[Cohere Embed v4<br/>1536 dimensions]
+            GPT[Claude Opus 4.6<br/>Playbook Generation]
+        end
+
+        subgraph AppAuth["JWT Authentication"]
+            JWT[Login → JWT Token<br/>bcrypt + PyJWT]
         end
     end
 
@@ -34,7 +38,9 @@ graph TB
 
     U1 -->|HTTPS| SSO
     SSO -->|Authenticated| FE
-    FE -->|/api/*| API
+    FE -->|Login| JWT
+    JWT -->|JWT Token| FE
+    FE -->|/api/* + Bearer Token| API
     API -->|asyncpg pool<br/>min=5 max=20| PG
     API -->|Embeddings + Completions| AI
     API -->|On-Demand Sync<br/>via UI or Scheduled| SN
@@ -54,18 +60,18 @@ sequenceDiagram
     participant Frontend
     participant API as FastAPI Backend
     participant DB as PostgreSQL + pgvector
-    participant LLM as OpenAI / Bedrock
+    participant LLM as Amazon Bedrock
 
-    User->>Frontend: Upload PDF / Paste JSON
-    Frontend->>API: POST /api/v1/analyze
+    User->>Frontend: Login (JWT) → Upload PDF / Paste JSON
+    Frontend->>API: POST /api/v1/analyze (Bearer token)
 
-    API->>LLM: Generate embedding (text-embedding-3-small)
+    API->>LLM: Generate embedding (Cohere Embed v4 via Bedrock)
     LLM-->>API: 1536-dim vector
 
     API->>DB: Vector similarity search (HNSW index)<br/>Top 15 matches from training set
     DB-->>API: Similar incidents + problem_ids + close_notes
 
-    API->>LLM: Generate playbook (GPT-5.4 / Claude)<br/>From similar incident evidence
+    API->>LLM: Generate playbook (Claude Opus 4.6 via Bedrock)<br/>From similar incident evidence
     LLM-->>API: Concise playbook + resolution notes
 
     API->>DB: Save to analysis_log<br/>Add incident to knowledge base (progressive learning)
@@ -84,7 +90,7 @@ sequenceDiagram
     participant API as FastAPI Backend
     participant SN as ServiceNow API
     participant DB as PostgreSQL
-    participant LLM as OpenAI / Bedrock
+    participant LLM as Amazon Bedrock
 
     User->>API: Check for new incidents (GET /sync/delta)
     API->>SN: Fetch closed incidents since last sync
@@ -95,7 +101,7 @@ sequenceDiagram
     API->>SN: Fetch full details via custom API<br/>(one incident at a time)
     SN-->>API: 52-field incident record + work notes
 
-    API->>LLM: Generate embedding (text-embedding-3-small)
+    API->>LLM: Generate embedding (Cohere Embed v4 via Bedrock)
     LLM-->>API: 1536-dim vector
 
     API->>DB: Insert incident + embedding
@@ -140,15 +146,31 @@ sequenceDiagram
 
 ### AI Services
 
-REX-US supports multiple LLM providers through a pluggable architecture. The system can use any model available via OpenAI API or Amazon Bedrock.
+In production, REX-US uses **Amazon Bedrock exclusively** -- no OpenAI API key is required. The LLM provider abstraction (`LLM_PROVIDER=bedrock`) routes all calls through Bedrock using IAM roles.
 
-| Service | Models Supported | Current Default | Purpose |
-|---------|-----------------|----------------|---------|
-| **OpenAI API** | GPT-5.4, GPT-5.3 | GPT-5.4 | Playbook generation, resolution notes |
-| **OpenAI API** | text-embedding-3-small, text-embedding-3-large | text-embedding-3-small | Vector embedding generation (1536 dims) |
-| **Amazon Bedrock** | Claude Opus 4.6, Claude Sonnet 4.6 | Sonnet 4.6 (preferred) | Alternative LLM for playbook generation |
+| Service | Model | Bedrock Model ID | Purpose |
+|---------|-------|-------------------|---------|
+| **Amazon Bedrock** | Claude Opus 4.6 | `anthropic.claude-opus-4-6-v1` | Playbook generation, resolution notes |
+| **Amazon Bedrock** | Cohere Embed v4 | `cohere.embed-v4:0` | Vector embedding generation (1536 dims) |
 
-> **Model flexibility**: The backend is model-agnostic — switching between GPT and Claude requires only a configuration change, not code changes. Amazon Bedrock provides access to Claude models without managing API keys directly, using IAM roles instead.
+> **No OpenAI API key in production.** All LLM and embedding calls go through Amazon Bedrock using IAM roles (`BEDROCK_ROLE_ARN`). The backend uses boto3 with `AssumeRole` to obtain temporary credentials. For local development, set `LLM_PROVIDER=openai` to use OpenAI directly.
+
+**IAM Role Requirements for Bedrock:**
+
+The ECS task role (or the role specified by `BEDROCK_ROLE_ARN`) must have:
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "bedrock:InvokeModel",
+    "bedrock:InvokeModelWithResponseStream"
+  ],
+  "Resource": [
+    "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-4-6-v1",
+    "arn:aws:bedrock:*::foundation-model/cohere.embed-v4:0"
+  ]
+}
+```
 
 **API Usage Estimates:**
 
@@ -178,7 +200,7 @@ REX-US supports multiple LLM providers through a pluggable architecture. The sys
 |---|----------------|---------|-------|--------|
 | 1 | **AWS Account** | Host all services | IT / Cloud Team | ⬜ |
 | 2 | **AWS VPC + Subnets** | Private networking for RDS | Cloud Admin | ⬜ |
-| 3 | **OpenAI API key** or **Bedrock model access** | GPT-5.4 + text-embedding-3-small | AI/ML Team | ⬜ |
+| 3 | **Amazon Bedrock model access** | Claude Opus 4.6 + Cohere Embed v4 (no OpenAI key needed) | AI/ML Team | ⬜ |
 | 4 | **AWS IAM Identity Center** | SSO for user authentication | Identity Team | ⬜ |
 | 5 | **Amazon RDS for PostgreSQL** | With pgvector extension enabled | DBA Team | ⬜ |
 | 6 | **ServiceNow API credentials** | OAuth 2.0 client_id + secret (read-only) | ServiceNow Admin | ⬜ |
@@ -190,16 +212,53 @@ REX-US supports multiple LLM providers through a pluggable architecture. The sys
 
 | Secret | Type | Used By |
 |--------|------|---------|
-| `OPENAI_API_KEY` | API Key | Backend → OpenAI (embeddings + GPT-5.4) |
-| `OPENAI_API_ENDPOINT` | URL | Backend → OpenAI (or Bedrock endpoint) |
+| `REXUS_JWT_SECRET` | Secret key | Backend → JWT token signing/verification |
+| `REXUS_ADMIN_PASSWORD` | Password | Backend → default admin account creation on first run |
+| `BEDROCK_ROLE_ARN` | IAM Role ARN | Backend → boto3 AssumeRole for Bedrock access |
 | `SERVICENOW_CLIENT_ID` | OAuth 2.0 | Backend → ServiceNow incident sync |
 | `SERVICENOW_CLIENT_SECRET` | OAuth 2.0 | Backend → ServiceNow incident sync |
 | `DATABASE_URL` | Connection string | Backend → PostgreSQL |
-| `SSO_CLIENT_ID` | OAuth 2.0 | Frontend → IAM Identity Center SSO |
+| `SSO_CLIENT_ID` | OAuth 2.0 | Frontend → IAM Identity Center SSO (network-level auth) |
+
+> **Note:** No `OPENAI_API_KEY` is stored in production. All LLM access goes through Bedrock IAM roles.
+
+### ECS Task Definition — Environment Variables
+
+The following environment variables must be set in the ECS task definition (or App Runner service configuration):
+
+| Variable | Value (Production) | Source |
+|----------|-------------------|--------|
+| `LLM_PROVIDER` | `bedrock` | Hardcoded |
+| `LLM_CHAT_MODEL` | `anthropic.claude-opus-4-6-v1` | Hardcoded |
+| `LLM_EMBED_MODEL` | `cohere.embed-v4:0` | Hardcoded |
+| `AWS_REGION` | `us-east-1` (or your region) | Hardcoded |
+| `BEDROCK_ROLE_ARN` | `arn:aws:iam::ACCOUNT:role/rexus-bedrock` | Secrets Manager |
+| `REXUS_JWT_SECRET` | (strong random string) | Secrets Manager |
+| `REXUS_ADMIN_PASSWORD` | (strong password) | Secrets Manager |
+| `DATABASE_URL` | `postgresql://...` | Secrets Manager |
+| `SERVICENOW_INSTANCE` | `https://....service-now.com` | Secrets Manager |
+| `SERVICENOW_CLIENT_ID` | (OAuth client ID) | Secrets Manager |
+| `SERVICENOW_CLIENT_SECRET` | (OAuth secret) | Secrets Manager |
+| `REXUS_ENV` | `production` | Hardcoded |
+| `REXUS_ORG_NAME` | `Discount Tire` | Hardcoded |
+| `DB_POOL_MIN` | `5` | Hardcoded |
+| `DB_POOL_MAX` | `20` | Hardcoded |
 
 ## 6. API Reference
 
 All endpoints are available via OpenAPI/Swagger at `/docs` when the backend is running.
+
+### Authentication
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/auth/login` | None | Login with username/password. Returns JWT access token. |
+| `POST` | `/auth/change-password` | Bearer | Change current user's password. |
+| `GET` | `/auth/me` | Bearer | Get current user profile. |
+| `GET` | `/auth/users` | Bearer (admin) | List all users (admin only). |
+| `POST` | `/auth/users` | Bearer (admin) | Create a new user (admin only). |
+| `PUT` | `/auth/users/{id}` | Bearer (admin) | Update user role/status (admin only). |
+| `DELETE` | `/auth/users/{id}` | Bearer (admin) | Delete a user (admin only). |
 
 ### Core Analysis
 
@@ -207,7 +266,9 @@ All endpoints are available via OpenAPI/Swagger at `/docs` when the backend is r
 |--------|----------|------|-------------|
 | `POST` | `/api/v1/analyze` | Bearer | Analyze incident from ServiceNow JSON. Returns confidence, playbook, problem suggestion, similar incidents. |
 | `POST` | `/api/v1/analyze/text` | Bearer | Quick analysis from plain text description. |
+| `POST` | `/api/v1/analyze/incident/{number}` | Bearer | Fetch incident from ServiceNow and analyze in one call. |
 | `POST` | `/api/v1/parse-pdf` | Bearer | Upload ServiceNow PDF → extract structured JSON. |
+| `GET` | `/api/v1/fetch-incident/{number}` | Bearer | Fetch a single incident from ServiceNow by INC number. |
 
 ### Incidents & Knowledge Base
 
@@ -227,7 +288,10 @@ All endpoints are available via OpenAPI/Swagger at `/docs` when the backend is r
 | `GET` | `/api/v1/analytics` | Bearer | Dashboard stats: incident counts, categories, clusters, resolution times. |
 | `GET` | `/api/v1/analysis-log` | Bearer | List all past analyses with results. |
 | `GET` | `/api/v1/analysis-log/{id}` | Bearer | Full detail of a specific analysis. |
-| `GET` | `/health` | None | Health check: DB connectivity, incident count. |
+| `GET` | `/api/v1/token-usage` | Bearer | Token usage dashboard — cost by model, endpoint, daily trend. |
+| `GET` | `/api/v1/config/llm` | Bearer | Current LLM provider configuration. |
+| `GET` | `/health` | None | Simple liveness check for load balancer probes. |
+| `GET` | `/health/detailed` | None (or `REXUS_ADMIN_KEY`) | Full 7-check observability: DB, LLM, ServiceNow, pool stats, usage, uptime. |
 
 ### Feedback
 
@@ -288,7 +352,7 @@ graph LR
 | **Session conflicts** | None — each API call is stateless. No server-side sessions. |
 | **Concurrent uploads** | Each request gets its own DB connection from the async pool. No blocking. |
 | **Database contention** | PostgreSQL handles concurrent reads efficiently. Writes (analysis logs) use row-level locking. |
-| **LLM rate limits** | OpenAI default: 120K tokens/min. 10 concurrent analyses = ~40K tokens. Well within limits. |
+| **LLM rate limits** | Bedrock default quotas are generous. 10 concurrent analyses = ~40K tokens. Well within limits. |
 | **User identification** | IAM Identity Center SSO provides user identity. Every analysis tagged with `user_id`. |
 | **Connection pool** | `min_size=5, max_size=20` — supports up to 20 concurrent DB operations. |
 
@@ -309,8 +373,11 @@ graph LR
 | Text feedback submission | ✅ Built | Linked to analysis ID |
 | Analysis logging | ✅ Built | Every analysis saved |
 | Progressive learning | ✅ Built | New incidents added to knowledge base |
-| SSO authentication | 🔲 Needed | IAM Identity Center or Cognito |
-| API authentication (Bearer tokens) | 🔲 Needed | Before production |
+| JWT authentication (login + roles) | ✅ Built | Admin/analyst/viewer roles, bcrypt + PyJWT |
+| API authentication (Bearer tokens) | ✅ Built | All endpoints protected with JWT Bearer tokens |
+| Token usage tracking | ✅ Built | Cost monitoring per model, endpoint, daily trend |
+| INC number fetch + analyze | ✅ Built | Fetch from ServiceNow and analyze in one call |
+| SSO authentication | 🔲 Needed | IAM Identity Center or Cognito (network-level) |
 | ServiceNow production API access | 🔲 Needed | Currently using dev instance |
 
 ### Roadmap (Post-MVP, Customer-Funded)
@@ -362,4 +429,4 @@ Full testing log available in `docs/wave-testing-log.md`.
 
 ---
 
-*Document version: 1.0 | Generated: 2026-03-30 | REX-US v2 — AWS Deployment Variant*
+*Document version: 2.0 | Updated: 2026-04-07 | REX-US v8 — AWS Deployment (Bedrock + JWT Auth)*

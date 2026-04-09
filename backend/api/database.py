@@ -1,3 +1,4 @@
+import os
 import asyncio
 
 import asyncpg
@@ -31,9 +32,12 @@ async def get_pool() -> asyncpg.Pool:
     async with _pool_lock:
         if _pool is None:
             dsn = _parse_dsn()
+            # ARCH-018: Pool sizes configurable via environment variables
+            pool_min = int(os.getenv("DB_POOL_MIN", "2"))
+            pool_max = int(os.getenv("DB_POOL_MAX", "10"))
             _pool = await asyncpg.create_pool(
-                min_size=2,
-                max_size=10,
+                min_size=pool_min,
+                max_size=pool_max,
                 command_timeout=30.0,
                 **dsn,
             )

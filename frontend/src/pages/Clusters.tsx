@@ -17,12 +17,17 @@ export default function ClustersPage() {
   const [minSize, setMinSize] = useState(5);
   const [selected, setSelected] = useState<ClusterDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [clusterError, setClusterError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const result = await api.clusters({ page, page_size: 15, min_size: minSize });
       setData(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load clusters');
     } finally {
       setLoading(false);
     }
@@ -31,8 +36,13 @@ export default function ClustersPage() {
   useEffect(() => { load(); }, [load]);
 
   const openCluster = async (id: number) => {
-    const detail = await api.cluster(id);
-    setSelected(detail as ClusterDetail);
+    setClusterError(null);
+    try {
+      const detail = await api.cluster(id);
+      setSelected(detail as ClusterDetail);
+    } catch (err) {
+      setClusterError(err instanceof Error ? err.message : 'Failed to load cluster details');
+    }
   };
 
   return (
@@ -54,6 +64,18 @@ export default function ClustersPage() {
           <option value={100}>100+ incidents</option>
         </select>
       </div>
+
+      {error && (
+        <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg p-3">
+          {error}
+        </div>
+      )}
+
+      {clusterError && (
+        <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg p-3">
+          {clusterError}
+        </div>
+      )}
 
       {/* Cards grid */}
       {loading ? (

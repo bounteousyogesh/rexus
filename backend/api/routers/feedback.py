@@ -4,34 +4,23 @@ REX-US Feedback — voice + text feedback on analysis results.
 
 import os
 import tempfile
+from typing import Literal
 
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, UploadFile, File, Query
-from openai import AsyncOpenAI
 
-from backend.api.config import OPENAI_API_KEY
 from backend.api.database import get_pool
+from backend.api.utils.llm_provider import LLM_PROVIDER
 
 router = APIRouter(tags=["feedback"])
-
-# ENH-011: Shared AsyncOpenAI singleton — avoids creating a new client object
-# per transcription request (each instantiation opens an httpx connection pool).
-_openai_client: AsyncOpenAI | None = None
-
-
-def _get_openai() -> AsyncOpenAI:
-    global _openai_client
-    if _openai_client is None:
-        _openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
-    return _openai_client
 
 
 class FeedbackRequest(BaseModel):
     analysis_id: int | None = None
     incident_number: str | None = Field(None, max_length=20)
     feedback_text: str = Field(..., min_length=1, max_length=5000)  # SEC-009 FIX
-    feedback_type: str = Field("general", max_length=50)
-    input_method: str = Field("text", max_length=20)
+    feedback_type: Literal["general", "positive", "negative", "suggestion"] = "general"
+    input_method: Literal["text", "voice"] = "text"
     rating: int | None = Field(None, ge=1, le=5)
 
 
@@ -84,7 +73,7 @@ ALLOWED_AUDIO_TYPES = {"audio/webm", "audio/wav", "audio/mp3", "audio/mpeg", "au
 async def transcribe_audio(file: UploadFile = File(...)):
     """Transcribe audio using OpenAI Whisper."""
     # Validate file type
-    if file.content_type and file.content_type not in ALLOWED_AUDIO_TYPES:
+    if not file.content_type or file.content_type not in ALLOWED_AUDIO_TYPES:
         raise HTTPException(400, f"Invalid audio type: {file.content_type}")
 
     # Read with size limit
@@ -99,8 +88,13 @@ async def transcribe_audio(file: UploadFile = File(...)):
         tmp_path = tmp.name
 
     try:
-        # ENH-011: Use shared client singleton instead of creating per-request
-        client = _get_openai()
+        if LLM_PROVIDER == "bedrock":
+            # Bedrock doesn't have Whisper — use AWS Transcribe or return error
+            raise HTTPException(501, "Voice transcription not available with Bedrock provider. Use text feedback.")
+
+        from openai import AsyncOpenAI
+        import os as _os
+        client = AsyncOpenAI(api_key=_os.getenv("OPENAI_API_KEY"))
         with open(tmp_path, "rb") as audio_file:
             transcript = await client.audio.transcriptions.create(
                 model="whisper-1",

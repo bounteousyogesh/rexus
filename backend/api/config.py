@@ -13,7 +13,8 @@ if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL environment variable is required. Copy .env.example to .env and configure.")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY environment variable is required.")
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
+if LLM_PROVIDER == "openai" and not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY environment variable is required when LLM_PROVIDER=openai.")
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")  # Optional; required when Claude integration is enabled

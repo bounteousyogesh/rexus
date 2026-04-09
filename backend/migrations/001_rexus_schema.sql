@@ -2,6 +2,7 @@
 -- Enhanced incident intelligence schema with full work notes support
 
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- ============================================================
 -- INCIDENT KNOWLEDGE BANK (ServiceNow)

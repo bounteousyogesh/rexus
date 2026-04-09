@@ -3,6 +3,7 @@ REX-US — FastAPI Backend
 Incident intelligence API powered by pgvector similarity search.
 """
 
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -15,11 +16,41 @@ from slowapi.errors import RateLimitExceeded
 
 from backend.api.database import get_pool, close_pool
 from backend.api.routers import health, incidents, clusters, playbooks, search, analyze, analytics, feedback, wave_test, sync
+from backend.api.routers import auth as auth_router
+
+logger = logging.getLogger("rexus")
+
+
+async def _ensure_default_admin() -> None:
+    """Create a default admin user if none exists."""
+    from backend.api.auth import hash_password
+
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "SELECT id FROM rexus_users WHERE role = 'admin' LIMIT 1"
+    )
+    if row is None:
+        default_pw = os.getenv("REXUS_ADMIN_PASSWORD", "RexUS@2026!")
+        pw_hash = hash_password(default_pw)
+        await pool.execute(
+            "INSERT INTO rexus_users (username, password_hash, role) "
+            "VALUES ($1, $2, 'admin') ON CONFLICT (username) DO NOTHING",
+            "admin",
+            pw_hash,
+        )
+        logger.warning(
+            "Default admin account created. Change the password after first login."
+        )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await get_pool()
+    try:
+        await _ensure_default_admin()
+    except Exception as exc:
+        # Don't crash the app if the users table doesn't exist yet
+        logger.info("Skipping admin bootstrap (table may not exist yet): %s", exc)
     yield
     await close_pool()
 
@@ -43,7 +74,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in cors_origins],
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Content-Type", "Authorization"],
 )
 
@@ -54,9 +85,17 @@ async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Cache-Control"] = "no-store"
+    # SEC-005: Content-Security-Policy for defense-in-depth against XSS
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none';"
+    )
     return response
 
 
@@ -78,6 +117,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 app.include_router(health.router)
+app.include_router(auth_router.router, prefix="/api/v1")
 app.include_router(incidents.router, prefix="/api/v1")
 app.include_router(clusters.router, prefix="/api/v1")
 app.include_router(playbooks.router, prefix="/api/v1")

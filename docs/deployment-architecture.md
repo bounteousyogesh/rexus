@@ -133,15 +133,15 @@ sequenceDiagram
 
 ### AI Services
 
-REX-US supports multiple LLM providers through a pluggable architecture. The system can use any model available via Azure OpenAI or Anthropic API.
+REX-US supports multiple LLM providers through a pluggable architecture controlled by the `LLM_PROVIDER` environment variable:
 
-| Service | Models Supported | Current Default | Purpose |
-|---------|-----------------|----------------|---------|
-| **Azure OpenAI** | GPT-5.4, GPT-5.3, GPT-5.4 | GPT-5.4 | Playbook generation, resolution notes |
-| **Azure OpenAI** | text-embedding-3-small, text-embedding-3-large | text-embedding-3-small | Vector embedding generation (1536 dims) |
-| **Anthropic (via API)** | Claude Opus 4.6, Claude Sonnet 4.6 | Sonnet 4.6 (preferred) | Alternative LLM for playbook generation |
+| Deployment | `LLM_PROVIDER` | Chat Model | Embedding Model | Auth |
+|-----------|----------------|------------|-----------------|------|
+| **Azure** | `openai` | GPT-5.4 via Azure OpenAI | text-embedding-3-small (1536 dims) | Azure OpenAI API Key |
+| **AWS** | `bedrock` | Claude Opus 4.6 via Bedrock | Cohere Embed v4 (1536 dims) | IAM Role (no API key) |
+| **Local Dev** | `openai` | gpt-4o | text-embedding-3-small (1536 dims) | OpenAI API Key |
 
-> **Model flexibility**: The backend is model-agnostic — switching between GPT and Claude requires only a configuration change, not code changes. This allows the team to evaluate which model produces better playbooks and switch as newer models become available.
+> **Model flexibility**: The backend is model-agnostic -- switching between providers requires only configuration changes (`LLM_PROVIDER`, `LLM_CHAT_MODEL`, `LLM_EMBED_MODEL`), not code changes. Both embedding paths produce 1536-dimensional vectors, so the pgvector index works identically across environments. For the AWS deployment path using Bedrock, no OpenAI API key is needed -- see `deployment-architecture-aws.md`.
 
 **API Usage Estimates:**
 
@@ -183,14 +183,28 @@ REX-US supports multiple LLM providers through a pluggable architecture. The sys
 |--------|------|---------|
 | `AZURE_OPENAI_KEY` | API Key | Backend → Azure OpenAI (embeddings + GPT-5.4) |
 | `AZURE_OPENAI_ENDPOINT` | URL | Backend → Azure OpenAI |
+| `REXUS_JWT_SECRET` | Secret key | Backend → JWT token signing/verification |
+| `REXUS_ADMIN_PASSWORD` | Password | Backend → default admin account creation on first run |
 | `SERVICENOW_CLIENT_ID` | OAuth 2.0 | Backend → ServiceNow incident sync |
 | `SERVICENOW_CLIENT_SECRET` | OAuth 2.0 | Backend → ServiceNow incident sync |
 | `DATABASE_URL` | Connection string | Backend → PostgreSQL |
-| `AZURE_AD_CLIENT_ID` | OAuth 2.0 | Frontend → Azure AD SSO |
+| `AZURE_AD_CLIENT_ID` | OAuth 2.0 | Frontend → Azure AD SSO (network-level auth) |
 
 ## 6. API Reference
 
 All endpoints are available via OpenAPI/Swagger at `/docs` when the backend is running.
+
+### Authentication
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/auth/login` | None | Login with username/password. Returns JWT access token. |
+| `POST` | `/auth/change-password` | Bearer | Change current user's password. |
+| `GET` | `/auth/me` | Bearer | Get current user profile. |
+| `GET` | `/auth/users` | Bearer (admin) | List all users (admin only). |
+| `POST` | `/auth/users` | Bearer (admin) | Create a new user (admin only). |
+| `PUT` | `/auth/users/{id}` | Bearer (admin) | Update user role/status (admin only). |
+| `DELETE` | `/auth/users/{id}` | Bearer (admin) | Delete a user (admin only). |
 
 ### Core Analysis
 
@@ -198,7 +212,9 @@ All endpoints are available via OpenAPI/Swagger at `/docs` when the backend is r
 |--------|----------|------|-------------|
 | `POST` | `/api/v1/analyze` | Bearer | Analyze incident from ServiceNow JSON. Returns confidence, playbook, problem suggestion, similar incidents. |
 | `POST` | `/api/v1/analyze/text` | Bearer | Quick analysis from plain text description. |
+| `POST` | `/api/v1/analyze/incident/{number}` | Bearer | Fetch incident from ServiceNow and analyze in one call. |
 | `POST` | `/api/v1/parse-pdf` | Bearer | Upload ServiceNow PDF → extract structured JSON. |
+| `GET` | `/api/v1/fetch-incident/{number}` | Bearer | Fetch a single incident from ServiceNow by INC number. |
 
 ### Incidents & Knowledge Base
 
@@ -218,7 +234,10 @@ All endpoints are available via OpenAPI/Swagger at `/docs` when the backend is r
 | `GET` | `/api/v1/analytics` | Bearer | Dashboard stats: incident counts, categories, clusters, resolution times. |
 | `GET` | `/api/v1/analysis-log` | Bearer | List all past analyses with results. |
 | `GET` | `/api/v1/analysis-log/{id}` | Bearer | Full detail of a specific analysis. |
-| `GET` | `/health` | None | Health check: DB connectivity, incident count. |
+| `GET` | `/api/v1/token-usage` | Bearer | Token usage dashboard — cost by model, endpoint, daily trend. |
+| `GET` | `/api/v1/config/llm` | Bearer | Current LLM provider configuration. |
+| `GET` | `/health` | None | Simple liveness check for load balancer probes. |
+| `GET` | `/health/detailed` | None (or `REXUS_ADMIN_KEY`) | Full 7-check observability: DB, LLM, ServiceNow, pool stats, usage, uptime. |
 
 ### Feedback
 
@@ -300,8 +319,11 @@ graph LR
 | Text feedback submission | ✅ Built | Linked to analysis ID |
 | Analysis logging | ✅ Built | Every analysis saved |
 | Progressive learning | ✅ Built | New incidents added to knowledge base |
-| Azure AD SSO | 🔲 Needed | Before production |
-| API authentication (Bearer tokens) | 🔲 Needed | Before production |
+| JWT authentication (login + roles) | ✅ Built | Admin/analyst/viewer roles, bcrypt + PyJWT |
+| API authentication (Bearer tokens) | ✅ Built | All endpoints protected with JWT Bearer tokens |
+| Token usage tracking | ✅ Built | Cost monitoring per model, endpoint, daily trend |
+| INC number fetch + analyze | ✅ Built | Fetch from ServiceNow and analyze in one call |
+| Azure AD SSO | 🔲 Needed | Network-level authentication before production |
 | ServiceNow production API access | 🔲 Needed | Currently using dev instance |
 
 ### Roadmap (Post-MVP, Customer-Funded)
@@ -334,4 +356,4 @@ Full testing log available in `docs/wave-testing-log.md`.
 
 ---
 
-*Document version: 1.0 | Generated: 2026-03-27 | REX-US v2 — Enterprise Deployment*
+*Document version: 2.0 | Updated: 2026-04-07 | REX-US v8 — Enterprise Deployment (Azure + JWT Auth)*

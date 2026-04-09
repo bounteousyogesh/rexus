@@ -1,0 +1,258 @@
+{
+  "review_type": "code_quality",
+  "reviewed_at": "2026-04-07",
+  "reviewer": "Claude Sonnet 4.6 — Elite Code Review Agent",
+  "gate": {
+    "required": "0 CRITICAL, 0 HIGH",
+    "result": "FAIL",
+    "critical_count": 1,
+    "high_count": 5,
+    "medium_count": 7,
+    "low_count": 6
+  },
+  "findings": [
+    {
+      "id": "QUAL-001",
+      "severity": "CRITICAL",
+      "category": "Dead Import / Provider Leakage",
+      "title": "analyze.py imports AsyncOpenAI directly — violates provider abstraction",
+      "location": "backend/api/routers/analyze.py:27",
+      "description": "Line 27 contains `from openai import AsyncOpenAI` at the top of analyze.py, yet the router never constructs or uses AsyncOpenAI directly — all LLM calls go through `llm_provider.chat_complete` and `embed_text`. This unused top-level import (a) creates a hard OpenAI dependency that breaks when LLM_PROVIDER=bedrock, (b) causes an ImportError if the `openai` package is absent in the Bedrock-only Docker image, and (c) is architecturally contradictory: the entire purpose of llm_provider.py is to be the single point of LLM contact. The feedback.py router has the same issue but conditionally imports under `if LLM_PROVIDER != 'bedrock'`; analyze.py does not guard the import at all.",
+      "impact": "Production-breaking when deployed with LLM_PROVIDER=bedrock and the openai package is not installed. Silently undermines the provider-abstraction contract that every other module respects.",
+      "solution": "Remove line 27 (`from openai import AsyncOpenAI`) from analyze.py. No other change needed — the router already uses the provider-agnostic `chat_complete` and `embed_text`.",
+      "principles_violated": ["Single Responsibility", "Open/Closed", "DRY"]
+    },
+    {
+      "id": "QUAL-002",
+      "severity": "HIGH",
+      "category": "DRY Violation — Duplicated Business Logic",
+      "title": "clean_for_embedding / extract_ids duplicated across three modules",
+      "location": [
+        "backend/api/routers/analyze.py:72 — clean_for_embedding",
+        "backend/api/routers/sync.py:60   — _clean_for_embedding (different regexes)",
+        "backend/api/routers/playbooks.py:12 — extract_ids",
+        "backend/api/routers/analyze.py:85  — extract_ids_from_text"
+      ],
+      "description": "Two separate `clean_for_embedding` implementations exist in analyze.py and sync.py (acknowledged in ARCH-005 comment). Their regex sets have already drifted: sync.py removes phone numbers and email addresses; analyze.py does not. Similarly, `extract_ids` in playbooks.py and `extract_ids_from_text` in analyze.py extract the same entity types (orders, problems, JIRA, incidents) using overlapping but non-identical regex patterns. The ARCH-005 comment documents the known divergence risk but leaves it unresolved.",
+      "impact": "Semantic inconsistency — incidents imported via /sync/import and incidents embedded via /analyze use different PII-removal logic, producing subtly different vectors for the same text. This degrades search recall and makes the grounding score unreliable. Also, any regex fix or JIRA ticket pattern change must be applied in multiple places and is guaranteed to be applied inconsistently.",
+      "solution": "Extract both functions to `backend/api/utils/text_utils.py`. Expose `clean_for_embedding(text, strict=False)` with a boolean flag to enable the stricter PII removal currently in sync.py. Remove ARCH-005 comment once the extraction is done.",
+      "principles_violated": ["DRY", "Single Responsibility"]
+    },
+    {
+      "id": "QUAL-003",
+      "severity": "HIGH",
+      "category": "Function Complexity",
+      "title": "analyze_ticket is a 200-line god function with 4 database connection acquisitions",
+      "location": "backend/api/routers/analyze.py:515–744",
+      "description": "The `analyze_ticket` route handler spans ~230 lines and acquires the database connection pool in three separate `async with pool.acquire()` blocks (lines ~536, ~686, ~718), plus passes pool to `_generate_focused_playbook` which acquires a fourth connection. The function performs: (1) embedding text construction, (2) embedding generation, (3) token tracking, (4) vector search, (5) keyword search, (6) hybrid merge and scoring, (7) cluster resolution, (8) batch detail fetch, (9) playbook generation, (10) analysis log persistence, (11) progressive learning insert. Cyclomatic complexity is approximately 18. The function is also called by analyze_text and analyze_from_servicenow, making it a critical blast-radius function.",
+      "impact": "Violates Single Responsibility. Difficult to unit-test individual phases. Pool acquisitions across a single request lifecycle add latency and risk pool exhaustion under load. A failure in the analysis-log write (step 10) leaves no indication that the response was already composed — the function still returns a partial result without an analysis_id.",
+      "solution": "Extract distinct phases into helper coroutines: `_run_hybrid_search(pool, embedding_str, raw_query, threshold, limit)`, `_persist_analysis_log(pool, ...)`, `_progressive_learn(pool, ...)`. Use a single `async with pool.acquire() as conn:` block for the search + detail fetch + cluster phases (they are already in a single block in the current code), and a separate block for the log write.",
+      "principles_violated": ["Single Responsibility", "SOLID-S", "Clean Code — function size"]
+    },
+    {
+      "id": "QUAL-004",
+      "severity": "HIGH",
+      "category": "Magic Numbers",
+      "title": "Scoring weights and grounding thresholds are unexplained magic numbers scattered inline",
+      "location": [
+        "backend/api/routers/analyze.py:263–268 — scoring weights (0.35, 0.30, 0.10, 0.05, 0.20)",
+        "backend/api/routers/analyze.py:450–457 — grounding score thresholds (8, 4, 2 → 0.95, 0.85, 0.7, 0.4)",
+        "backend/api/routers/analyze.py:591 — hybrid score bonus multiplier (0.05)",
+        "backend/api/routers/analyze.py:266 — frequency threshold (3)"
+      ],
+      "description": "The problem-scoring formula uses five weights that sum to exactly 1.0 (0.35+0.30+0.10+0.05+0.20=1.00), but there is no comment explaining what each coefficient represents, how they were derived, or how to tune them. The grounding score step function uses counts 8/4/2 and confidences 0.95/0.85/0.70/0.40 without any documented rationale. These values are algorithmically significant — a small change alters which problem ticket is surfaced to engineers.",
+      "impact": "Anyone modifying the scoring must guess the intent. The weights look empirically calibrated but nothing in the code confirms this. When model quality or data distribution changes, there is no principled way to retune without understanding the original reasoning.",
+      "solution": "Move constants to the module top with named constants and explanatory comments:\n```python\n# Problem scoring weights — tuned on wave-3 evaluation set (2024-Q4)\nSCORE_CMDB_WEIGHT    = 0.35  # Strongest signal: same system family\nSCORE_SIM_WEIGHT     = 0.30  # Vector similarity of matched incidents\nSCORE_FREQ_WEIGHT    = 0.10  # How often this problem appears in results\nSCORE_FREQ_THRESHOLD = 3     # Count above which frequency bonus maxes out\nSCORE_OPEN_WEIGHT    = 0.20  # Prefer open/active problem tickets\nSCORE_COUNT_WEIGHT   = 0.05  # Small bonus for frequent-match problems\n\nGROUNDING_HIGH   = (8,  0.95)  # ≥8 resolved similar incidents\nGROUNDING_MED    = (4,  0.85)\nGROUNDING_LOW    = (2,  0.70)\nGROUNDING_WEAK   = (0,  0.40)\n```",
+      "principles_violated": ["Clean Code — no magic numbers", "Maintainability"]
+    },
+    {
+      "id": "QUAL-005",
+      "severity": "HIGH",
+      "category": "Missing Error Handling",
+      "title": "sync.py importGroup does not handle import errors — UI shows no feedback on failure",
+      "location": "frontend/src/pages/SyncPage.tsx:93–110",
+      "description": "The `importGroup` callback in SyncPage.tsx (line 93) fetches `${BASE}/sync/import`, checks `res.ok`, and throws on non-2xx responses. However the `catch` block is absent — the `try/finally` only has a `finally` to reset `importing` state. If the fetch rejects (network error) or the server returns 500, the exception propagates silently: the `importing` spinner clears (via finally), no error message is shown to the user, and the delta does not refresh. The user sees the import button re-enable with the same count, with no indication of what happened.",
+      "impact": "Silent failures during bulk import leave the operator unaware that incidents were not imported. This is especially dangerous for \"Import All\" which can process dozens of incidents in batches.",
+      "solution": "Add a catch block:\n```typescript\nconst importGroup = useCallback(async (incidents: SyncIncident[]) => {\n  ...\n  try {\n    ...\n  } catch (err) {\n    setDeltaError(err instanceof Error ? err.message : 'Import failed');\n  } finally {\n    setImporting(null);\n  }\n}, []);\n```",
+      "principles_violated": ["Error Handling", "User Experience Safety"]
+    },
+    {
+      "id": "QUAL-006",
+      "severity": "HIGH",
+      "category": "Missing Error Handling",
+      "title": "Incidents.tsx load() swallows errors silently — user sees stale/empty UI with no message",
+      "location": "frontend/src/pages/Incidents.tsx:15–29",
+      "description": "The `load` callback on lines 15–29 has `try { ... } finally { setLoading(false) }` with no `catch`. When `api.incidents()` rejects (network error, 500, 429), `setLoading(false)` fires, `data` remains null, and the component renders an empty table with `Loading...` in the subtitle — but no error state. The user cannot distinguish between \"no incidents in the database\" and \"the API is down\".",
+      "impact": "Operators debugging production issues see an empty list and may incorrectly conclude the data is missing. This affects the primary incident browsing workflow.",
+      "solution": "Add error state:\n```typescript\nconst [error, setError] = useState<string | null>(null);\nconst load = useCallback(async () => {\n  setLoading(true);\n  setError(null);\n  try {\n    const result = await api.incidents({ ... });\n    setData(result);\n  } catch (err) {\n    setError(err instanceof Error ? err.message : 'Failed to load incidents');\n  } finally {\n    setLoading(false);\n  }\n}, [...]);\n```\nRender an error banner when `error !== null`.",
+      "principles_violated": ["Error Handling", "Defensive Programming"]
+    },
+    {
+      "id": "QUAL-007",
+      "severity": "MEDIUM",
+      "category": "Hardcoded Test Incident Number",
+      "title": "Real incident number INC2239275 hardcoded as default UI state",
+      "location": "frontend/src/pages/Analyze.tsx:19",
+      "description": "The `incNumber` state initializes to the string `'INC2239275'`, a real ServiceNow incident number. This is almost certainly a developer convenience value that was not removed before commit. It means every new user who opens the app sees a pre-filled incident number from what appears to be a production case. If this incident contains PII or is a sensitive security incident, displaying it as a default is a data exposure risk.",
+      "impact": "Information disclosure: every user who opens the Analyze page sees a real incident number. If a user accidentally clicks Analyze without changing the number, a live ServiceNow call is made and the incident's details are displayed and written to the analysis log.",
+      "solution": "Change the initial state to an empty string:\n```typescript\nconst [incNumber, setIncNumber] = useState('');\n```",
+      "principles_violated": ["Security — no production data in defaults", "Clean Code"]
+    },
+    {
+      "id": "QUAL-008",
+      "severity": "MEDIUM",
+      "category": "Performance Anti-Pattern",
+      "title": "Artificial setTimeout delays in handleAnalyze simulate progress steps",
+      "location": "frontend/src/pages/Analyze.tsx:62–65",
+      "description": "When ticket JSON is already available (from PDF upload or prior fetch), `handleAnalyze` advances the step state through `embedding` and `searching` with two 300ms `setTimeout` delays before making the real API call. These delays are cosmetic — they simulate progress steps that have already completed on the server. They add 600ms of unnecessary wait time to the happy path and cause the UI to show misleading progress states.",
+      "impact": "Users experience 600ms of artificial latency. If the actual API call is fast (e.g., cache hit), the artificial delay dominates. The displayed steps (embedding, searching) are factually incorrect — those steps happen server-side during the single `api.analyze()` call.",
+      "solution": "Remove the two `await new Promise(r => setTimeout(r, 300))` lines. If visual feedback is desired for each phase, use server-sent events or accept that the client cannot accurately mirror server-side progress for a single HTTP call.",
+      "principles_violated": ["Performance", "Honest UX"]
+    },
+    {
+      "id": "QUAL-009",
+      "severity": "MEDIUM",
+      "category": "Missing Type",
+      "title": "analyze.py grounding score calculated via manual if-elif chain — no type or enum",
+      "location": "backend/api/routers/analyze.py:450–457",
+      "description": "The grounding score is computed via a plain if/elif chain that maps `incidents_with_notes` integer to a float. There is no type annotation, no named enum, and no documentation of what these levels mean. The same grounding values (0.95, 0.85, 0.7, 0.4) are referenced in the `FocusedPlaybookResult` Pydantic model as an opaque `float`. On the frontend, this float is displayed as a percentage without any legend.",
+      "impact": "Future maintainers cannot determine valid values for `grounding_score` from the type system alone. Tests that assert grounding scores must use magic literals. The four tiers are effectively an undocumented enum.",
+      "solution": "Introduce a named constant or simple function:\n```python\ndef _grounding_score(incidents_with_notes: int) -> float:\n    if incidents_with_notes >= GROUNDING_HIGH[0]:   return GROUNDING_HIGH[1]\n    if incidents_with_notes >= GROUNDING_MED[0]:    return GROUNDING_MED[1]\n    if incidents_with_notes >= GROUNDING_LOW[0]:    return GROUNDING_LOW[1]\n    return GROUNDING_WEAK[1]\n```\nThis makes the thresholds testable in isolation and collocates them with their constants.",
+      "principles_violated": ["Clean Code", "Testability"]
+    },
+    {
+      "id": "QUAL-010",
+      "severity": "MEDIUM",
+      "category": "Test Coverage Gap",
+      "title": "No unit tests for pure functions: clean_for_embedding, extract_ids_from_text, _score_problems, _build_evidence_lines",
+      "location": "tests/ — no test file covers analyze.py helper functions",
+      "description": "The most algorithmically critical functions in the codebase — `clean_for_embedding`, `extract_ids_from_text`, `_score_problems`, and `_build_evidence_lines` — have zero unit tests. The test suite is entirely integration tests against a live server. `_score_problems` implements a weighted scoring formula whose correctness is central to which problem ticket is surfaced. `clean_for_embedding` uses regex patterns whose correctness affects every embedding. These functions have no external dependencies and are trivially unit-testable.",
+      "impact": "Regressions in scoring or text-cleaning logic will not be caught until they affect production analysis quality. The problem scoring formula in particular (QUAL-004) cannot be verified to sum correctly or produce intended orderings without tests.",
+      "solution": "Add `tests/test_utils.py` with pytest unit tests for each pure function:\n```python\ndef test_clean_for_embedding_replaces_order_numbers():\n    assert '[ORDER]' in clean_for_embedding('Order 5001234567 failed')\n\ndef test_score_problems_prefers_open_problems():\n    open_p  = {'count': 1, 'total_sim': 0.8, 'cmdb_cis': []}\n    closed_p = {'count': 3, 'total_sim': 0.9, 'cmdb_cis': []}\n    result = _score_problems({'PRB001': open_p, 'PRB002': closed_p},\n                             {'PRB001': 'Open', 'PRB002': 'Closed'}, '')\n    assert result[0]['id'] == 'PRB001'\n```",
+      "principles_violated": ["Test Coverage", "Reliability"]
+    },
+    {
+      "id": "QUAL-011",
+      "severity": "MEDIUM",
+      "category": "Test Coverage Gap",
+      "title": "No unit tests for llm_provider.py, token_tracker.py, pdf_parser.py, or servicenow_client.py",
+      "location": "tests/ — no test files for utility modules",
+      "description": "The four utility modules that underpin the entire system have no dedicated test files. `token_tracker.py:estimate_cost` applies a pricing formula and falls back to a default price for unknown models (lines 33–34) — this fallback and the pricing table are untested. `pdf_parser.py` contains complex regex and field-extraction logic across `extract_field_value_pairs`, `extract_work_notes`, and `_organize` that have been ported from a previous system. `servicenow_client.py` handles OAuth token refresh with a 60-second expiry buffer — the refresh logic is untested.",
+      "impact": "Pricing calculation errors go undetected. PDF extraction regressions (e.g., a regex change that drops IDoc Text) are not caught until they affect analysis quality. OAuth token refresh bugs manifest as intermittent 401 errors in production.",
+      "solution": "Add:\n- `tests/test_token_tracker.py` — test `estimate_cost` for known and unknown models, test that tracking failure does not raise.\n- `tests/test_pdf_parser.py` — test `clean_text`, `extract_field_value_pairs`, `extract_work_notes` against fixture strings.\n- `tests/test_servicenow_client.py` — mock `requests.post` to test token acquisition and refresh logic.",
+      "principles_violated": ["Test Coverage", "Reliability"]
+    },
+    {
+      "id": "QUAL-012",
+      "severity": "MEDIUM",
+      "category": "Table Version Inconsistency",
+      "title": "sync.py uses rexus_incidents_v2 while analyze.py uses rexus_incidents_v3 — inconsistent knowledge bases",
+      "location": [
+        "backend/api/routers/sync.py:214,314,425 — queries rexus_incidents_v2",
+        "backend/api/routers/analyze.py:541,553,569,623,720 — queries rexus_incidents_v3"
+      ],
+      "description": "The sync router's status check, delta check, and import endpoint all operate on `rexus_incidents_v2`, while the analyze router's vector search, detail fetch, and progressive learning all operate on `rexus_incidents_v3`. An incident imported via `POST /sync/import` is stored in v2, but a subsequent `POST /analyze` will not find it because the vector search queries v3. This means synced incidents are effectively invisible to the analysis engine until manually migrated.",
+      "impact": "Operators import incidents via the Sync page expecting them to be retrievable by the analysis engine. They will see the import succeed but the newly imported incidents will never appear as similar matches. This is a silent correctness failure that would be very difficult to diagnose.",
+      "solution": "Align the sync endpoint to insert into `rexus_incidents_v3` with the same schema used by the analyze engine, OR maintain an explicit migration/copy job between v2 and v3 with monitoring. Document the intended data flow clearly in both router files.",
+      "principles_violated": ["Data Integrity", "Single Source of Truth", "DRY"]
+    },
+    {
+      "id": "QUAL-013",
+      "severity": "MEDIUM",
+      "category": "Code Quality — Naming",
+      "title": "incidents.py list_incidents uses raw f-string query construction — safe but fragile pattern",
+      "location": "backend/api/routers/incidents.py:19–65",
+      "description": "The `list_incidents` endpoint builds a WHERE clause by dynamically constructing the SQL fragment using f-strings (e.g., `f\"category = ${idx}\"`) and maintains a manual positional parameter index `idx`. This pattern is safe because user values are parameterized ($1, $2...), but it is fragile: adding or removing a filter condition requires manually updating the `idx` counter and the correct ordering of `*params` in the query call. A developer who adds a filter and forgets to increment `idx` will produce silently incorrect queries.",
+      "impact": "Maintenance risk. The pattern has already been replicated in playbooks.py. A future developer copying this pattern and making an off-by-one error in `idx` could produce queries with mismatched parameter bindings.",
+      "solution": "Use a query builder pattern that automatically handles indexing:\n```python\nconditions, params = [], []\nif category:\n    params.append(category)\n    conditions.append(f'category = ${len(params)}')\n```\nOr consider using a lightweight ORM or SQLAlchemy core for dynamic query building.",
+      "principles_violated": ["Maintainability", "Error-Prone Patterns"]
+    },
+    {
+      "id": "QUAL-014",
+      "severity": "LOW",
+      "category": "Commented-Out Code",
+      "title": "analyze.py line 27 contains a vestigial import that was never used",
+      "location": "backend/api/routers/analyze.py:27",
+      "description": "Beyond the CRITICAL-severity provider-leakage issue, `from openai import AsyncOpenAI` on line 27 also represents dead code — no symbol from AsyncOpenAI is used in this file. Static analysis tools (pylint W0611, flake8 F401) would flag this as an unused import.",
+      "impact": "Increases cognitive load for readers who assume all imports are intentional. Will trigger linting warnings if a CI linting step is ever added.",
+      "solution": "Remove the import (covered by QUAL-001 fix).",
+      "principles_violated": ["Clean Code — no dead code"]
+    },
+    {
+      "id": "QUAL-015",
+      "severity": "LOW",
+      "category": "Missing Types",
+      "title": "ServiceNowClient uses `List`, `Dict`, `Any` from typing rather than built-in generics",
+      "location": "backend/services/servicenow_client.py:1–13",
+      "description": "The service imports `Dict`, `Any`, `List`, `Optional` from `typing` (Python 3.5 style), and uses them in all method signatures. Since Python 3.9+ `dict[str, Any]`, `list[...]`, and `X | None` are directly available as built-in generics. The rest of the codebase (analyze.py, sync.py, llm_provider.py) consistently uses the modern style (`list[dict]`, `str | None`), making servicenow_client.py inconsistent.",
+      "impact": "Minor style inconsistency. The `from typing import` block adds four unnecessary imports.",
+      "solution": "Replace `List[Dict[str, Any]]` with `list[dict[str, Any]]`, `Optional[str]` with `str | None`, remove the `from typing import Dict, Any, List, Optional` line.",
+      "principles_violated": ["Code Consistency"]
+    },
+    {
+      "id": "QUAL-016",
+      "severity": "LOW",
+      "category": "Magic Bytes Comparison",
+      "title": "PDF magic bytes check uses != on bytes objects — incorrect Python idiom",
+      "location": "backend/api/routers/analyze.py:901",
+      "description": "The check `if not content[:5] == b'%PDF-':` is logically equivalent to `if content[:5] != b'%PDF-':` but uses double negation. While functionally correct, it is an unusual pattern. More importantly, comparing full magic-byte prefix should use `startswith` for clarity and to avoid subtle slice-length off-by-one if the constant changes.",
+      "impact": "Readability only. No functional bug.",
+      "solution": "```python\nif not content.startswith(b'%PDF-'):\n    raise HTTPException(400, 'File does not appear to be a valid PDF')\n```",
+      "principles_violated": ["Clean Code — clarity"]
+    },
+    {
+      "id": "QUAL-017",
+      "severity": "LOW",
+      "category": "Missing Type Annotation",
+      "title": "token_tracker.py:track_usage `pool` parameter is untyped",
+      "location": "backend/api/utils/token_tracker.py:37",
+      "description": "The `track_usage` async function signature has `pool` typed as the bare `pool` parameter with no type annotation. asyncpg's connection pool type is `asyncpg.pool.Pool`. Without the annotation, IDEs and mypy cannot perform type checking on pool method calls inside the function.",
+      "impact": "Minor. Static analysis cannot verify `.acquire()` usage. Acceptable risk given the function is simple and well-tested by integration tests.",
+      "solution": "Add `from asyncpg import Pool` and annotate: `async def track_usage(pool: Pool, ...)`.",
+      "principles_violated": ["Type Safety"]
+    },
+    {
+      "id": "QUAL-018",
+      "severity": "LOW",
+      "category": "Performance Anti-Pattern",
+      "title": "search.py builds embedding_str via string join in application code — could use pgvector cast",
+      "location": [
+        "backend/api/routers/search.py:16",
+        "backend/api//routers/analyze.py:527"
+      ],
+      "description": "Both search.py and analyze.py convert the embedding float list to a string using `\"[\" + \",\".join(str(x) for x in embedding) + \"]\"` and then pass it as `$1::vector`. For a 1536-dimension embedding, this produces a ~12KB string that must be serialized, transmitted over the asyncpg connection, and parsed by PostgreSQL. This is the standard asyncpg pattern for pgvector and is not wrong, but it could be replaced by registering a pgvector codec with asyncpg to avoid the string-serialize-parse round-trip.",
+      "impact": "Minor performance overhead per query. The serialization adds ~1ms at 1536 dimensions. Not significant for current load.",
+      "solution": "Register the pgvector codec at startup: `await conn.set_type_codec('vector', encoder=..., decoder=..., schema='public')`. The pgvector Python package provides this. This is an optimization, not a bug fix.",
+      "principles_violated": ["Performance (minor)"]
+    },
+    {
+      "id": "QUAL-019",
+      "severity": "LOW",
+      "category": "Naming Convention",
+      "title": "_LLMResponse uses leading underscore convention but is structurally a public protocol",
+      "location": "backend/api/utils/llm_provider.py:178",
+      "description": "The `_LLMResponse` dataclass is named with a leading underscore (private convention) but its property interface (`.choices[0].message.content`, `.usage.prompt_tokens`) is part of the public contract that all callers depend on. Any router that calls `chat_complete()` implicitly depends on `_LLMResponse`'s interface matching the OpenAI SDK's response shape. The private name signals \"implementation detail\" but this class is the cross-cutting normalization layer.",
+      "impact": "Minor. Documentation gap only — the class is effectively public API within the package.",
+      "solution": "Rename to `LLMResponse` (without underscore) and add a brief docstring explaining it is the normalized response shape for both providers.",
+      "principles_violated": ["Naming Conventions", "Documentation"]
+    }
+  ],
+  "summary": {
+    "total_findings": 19,
+    "by_severity": {
+      "CRITICAL": 1,
+      "HIGH": 5,
+      "MEDIUM": 7,
+      "LOW": 6
+    },
+    "top_themes": [
+      "DRY violations — clean_for_embedding and extract_ids duplicated across 3 modules",
+      "Table version split — sync writes v2, analyze reads v3 (silent data divergence)",
+      "Dead import — unused AsyncOpenAI top-level import breaks Bedrock deployment",
+      "Missing error handling — SyncPage and IncidentsPage silently swallow fetch failures",
+      "Magic numbers — scoring weights and grounding thresholds undocumented inline",
+      "Test coverage — zero unit tests for pure functions and utility modules"
+    ],
+    "gate_status": "FAIL — 1 CRITICAL, 5 HIGH findings require resolution before merge"
+  }
+}

@@ -12,9 +12,11 @@ export default function IncidentsPage() {
   const [selected, setSelected] = useState<Incident | null>(null);
   const [detailData, setDetailData] = useState<Incident | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const result = await api.incidents({
         page,
@@ -24,6 +26,8 @@ export default function IncidentsPage() {
         cmdb_ci: cmdbCi || undefined,
       });
       setData(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load incidents');
     } finally {
       setLoading(false);
     }
