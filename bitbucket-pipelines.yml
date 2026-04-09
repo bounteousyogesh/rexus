@@ -5,7 +5,7 @@ definitions:
     - &docker_build |
         set -euo pipefail
 
-        export DOCKER_BUILDKIT=0
+        export DOCKER_BUILDKIT=1
         export IMAGE_NAME="${BITBUCKET_REPO_SLUG}-${SERVICE}"
         export IMAGE_TAG="${BITBUCKET_TAG:-${BITBUCKET_COMMIT:0:6}}"
 
