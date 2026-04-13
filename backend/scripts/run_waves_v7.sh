@@ -23,9 +23,10 @@ LOGDIR=/Users/premkalyan/code/REX-US/data/v7_wave_logs
 mkdir -p "$LOGDIR"
 
 # Check backend is running
-echo "Checking backend..."
-if ! curl -sf http://localhost:8000/health > /dev/null 2>&1; then
-    echo "ERROR: Backend not running on http://localhost:8000"
+API_HOST="${REXUS_API_BASE:-http://localhost:8000}"
+echo "Checking backend at $API_HOST..."
+if ! curl -sf "$API_HOST/health" > /dev/null 2>&1; then
+    echo "ERROR: Backend not running at $API_HOST"
     echo "Start it with: cd backend && .venv/bin/uvicorn api.main:app --reload"
     exit 1
 fi

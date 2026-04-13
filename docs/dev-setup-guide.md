@@ -49,6 +49,16 @@ OPENAI_API_KEY=your_openai_api_key        # only needed when LLM_PROVIDER=openai
 # --- Authentication ---
 REXUS_JWT_SECRET=some-random-secret-string  # JWT signing key (any strong random string)
 REXUS_ADMIN_PASSWORD=RexUS@2026!            # default admin password (change in production)
+
+# --- SSO / Okta (Optional) ---
+# Set SSO_ENABLED=true to show "Sign in with SSO" button on the login page.
+# When false (default), only username/password login is available.
+SSO_ENABLED=false                            # true to enable SSO, false for password-only login
+SSO_CLIENT_ID=                               # Okta OIDC client ID
+SSO_ISSUER_URL=                              # Okta issuer URL (e.g. https://yourcompany.oktapreview.com/oauth2/xxxxx)
+SSO_AUDIENCE=                                # Okta audience (e.g. "AI Agents")
+SSO_DEFAULT_ROLE=analyst                     # role assigned to new users created via SSO
+SSO_REDIRECT_URI=http://localhost:5173/auth/callback  # must match Okta app redirect URI
 ```
 
 ---
@@ -243,6 +253,23 @@ Or from the UI: the **Dashboard** tab shows incident counts, categories, and sys
 | `SERVICENOW_TIMEOUT_S` | No | HTTP timeout for ServiceNow calls (default: `30`) |
 | `SERVICENOW_SEARCH_PATH` | No | Path for DT search API (default: `/api/ditci/servicenow/incident/search`) |
 | `SN_CLOSED_STATE_CODE` | No | ServiceNow closed state code for incident filtering |
+| `SSO_ENABLED` | No | Set to `true` to show "Sign in with SSO" on login page (default: `false`) |
+| `SSO_CLIENT_ID` | When SSO enabled | Okta OIDC client ID |
+| `SSO_ISSUER_URL` | When SSO enabled | Okta issuer URL (includes authorization server path) |
+| `SSO_AUDIENCE` | When SSO enabled | Okta audience value (e.g. `AI Agents`) |
+| `SSO_DEFAULT_ROLE` | No | Role assigned to users created via SSO (default: `analyst`) |
+| `SSO_REDIRECT_URI` | When SSO enabled | Redirect URI after Okta login (must match Okta app config) |
+
+---
+
+## Login Options
+
+REX-US supports two login methods:
+
+- **Username/Password** (always available) — default admin account `admin` / `RexUS@2026!` created on first startup. Admin can create additional users via the Admin page.
+- **SSO via Okta** (when `SSO_ENABLED=true`) — users authenticate through Okta and are auto-created in REX-US on first login with the role set by `SSO_DEFAULT_ROLE`. No password needed for SSO users.
+
+When `SSO_ENABLED=false`, only username/password login is shown. When `true`, both options appear on the login page. This allows you to test locally with password login and switch to SSO when Okta is configured.
 
 ---
 
@@ -259,7 +286,8 @@ The LLM provider abstraction means the same codebase runs locally with OpenAI or
 | Auth for LLM | `OPENAI_API_KEY` env var | IAM role via `BEDROCK_ROLE_ARN` (boto3 AssumeRole) |
 | `REXUS_JWT_SECRET` | Any random string | Strong secret from Secrets Manager |
 | `REXUS_ADMIN_PASSWORD` | `RexUS@2026!` (default) | Strong password from Secrets Manager |
-| `REXUS_ENV` | `development` (Swagger enabled) | `production` (Swagger disabled) |
+| `REXUS_ENV` | `development` (Swagger enabled, PDF upload shown) | `production` (Swagger disabled, PDF upload hidden) |
+| `SSO_ENABLED` | `false` (password login only) | `true` (SSO via Okta + password fallback) |
 
 > **Important:** No OpenAI API key is needed in AWS production. All LLM and embedding calls go through Amazon Bedrock using IAM roles. Both embedding models produce 1536-dimensional vectors, so the pgvector index works identically in both environments.
 

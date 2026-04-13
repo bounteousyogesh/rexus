@@ -143,10 +143,17 @@ if not OPENAI_API_KEY:
 | Secret | Storage | Fail-fast |
 |--------|---------|-----------|
 | `DATABASE_URL` | Environment variable | RuntimeError on startup |
-| `OPENAI_API_KEY` | Environment variable | RuntimeError on startup |
+| `OPENAI_API_KEY` | Environment variable | RuntimeError on startup (local dev only) |
+| `REXUS_JWT_SECRET` | Environment variable | Auto-generated if missing (logged warning) |
+| `REXUS_ADMIN_PASSWORD` | Environment variable | Default `RexUS@2026!` if missing |
+| `REXUS_ADMIN_KEY` | Environment variable | Optional — gates `/health/detailed` |
 | `SERVICENOW_CLIENT_ID` | Environment variable | ValueError when sync is attempted |
 | `SERVICENOW_CLIENT_SECRET` | Environment variable | ValueError when sync is attempted |
 | `SERVICENOW_INSTANCE` | Environment variable | ValueError when sync is attempted |
+
+**JWT Secret:** `REXUS_JWT_SECRET` is used to sign and verify JWT tokens. If not set, the application auto-generates a random secret on startup and logs a warning. This means tokens will be invalidated on every restart unless the secret is explicitly configured. In production, always set `REXUS_JWT_SECRET` to a stable, high-entropy value.
+
+**Admin Password:** `REXUS_ADMIN_PASSWORD` sets the initial password for the auto-created admin account. If not set, defaults to `RexUS@2026!`. Change it immediately after first login in production.
 
 - `.env` file excluded from version control (`.gitignore`)
 - `.env.example` template provided without actual values
@@ -178,6 +185,10 @@ The actual exception is logged server-side for debugging. The client only sees a
 - `422` — Pydantic validation failures (automatic via FastAPI)
 
 Error messages describe what went wrong generically, not internal details.
+
+### Health endpoint gating
+
+The `/health/detailed` endpoint exposes comprehensive system diagnostics (7 checks including database, LLM connectivity, token usage stats). When `REXUS_ADMIN_KEY` is set, this endpoint requires the key as a query parameter or `X-Admin-Key` header. The basic `/health` endpoint remains unauthenticated for ALB health checks.
 
 ### API documentation suppression
 
@@ -257,13 +268,54 @@ Every HTTP response includes:
 
 ---
 
-## 8. Authentication (Production Roadmap)
+## 8. Authentication & Authorization
 
-**Status: Not yet implemented — under consideration**
+**Status: Implemented**
 
-- **MVP (current):** Relies on network-level access control — server accessible only within corporate network
-- **Production plan:** SSO integration (AWS IAM Identity Center or Azure AD) using Bearer token authentication via FastAPI dependency
-- **Priority:** Write-capable endpoints (`/sync/import`, `/playbooks/generate`, `/feedback`) will be gated first
+**Files:** `backend/api/routers/auth.py`, `backend/api/auth.py`, `backend/migrations/005_auth.sql`
+
+### Password hashing
+
+User passwords are hashed with **bcrypt** (via the `bcrypt` library) before storage. Plain-text passwords are never stored or logged.
+
+### JWT tokens
+
+Authentication uses **JWT bearer tokens** (via `PyJWT`):
+- Issued on successful login at `POST /api/v1/auth/login`
+- **24-hour expiry** — users must re-authenticate daily
+- Signed with `REXUS_JWT_SECRET` (HS256 algorithm)
+- Included in all subsequent requests as `Authorization: Bearer <token>`
+
+### Role-based access control
+
+Three roles with cascading permissions:
+
+| Role | Analyze | View Incidents | SN Sync/Import | Manage Users |
+|------|---------|---------------|----------------|-------------|
+| `viewer` | No | Yes | No | No |
+| `analyst` | Yes | Yes | Yes | No |
+| `admin` | Yes | Yes | Yes | Yes |
+
+### Auto-created admin account
+
+On first startup, if no users exist in the `rexus_users` table, an admin account is automatically created:
+- **Username:** `admin`
+- **Password:** Value of `REXUS_ADMIN_PASSWORD` env var, or `RexUS@2026!` if not set
+- Change this password immediately after first login in production
+
+### Rate limiting
+
+**Library:** `slowapi` (built on `limits`)
+
+Rate limiting is applied to write-heavy endpoints to prevent abuse:
+
+| Endpoint | Default Limit | Env Var |
+|----------|--------------|---------|
+| `/analyze`, `/analyze/text` | 20/minute per IP | `RATE_LIMIT_ANALYZE` |
+| `/sync/import` | 5/minute per IP | `RATE_LIMIT_SYNC` |
+| All other endpoints | 60/minute per IP | `RATE_LIMIT_DEFAULT` |
+
+Exceeded limits return HTTP 429 with a `Retry-After` header.
 
 ---
 
@@ -278,4 +330,4 @@ All security controls in this document have been verified against the current co
 
 ---
 
-*Document version: 1.1 | 2026-04-03 | REX-US v7*
+*Document version: 1.2 | 2026-04-07 | REX-US v7*

@@ -1,8 +1,13 @@
 """
 REX-US Auth Router
-Endpoints for login, user management, and password changes.
+Endpoints for login, user management, password changes, and SSO (Okta OIDC/PKCE).
 """
 
+import base64
+import json
+import logging
+
+import requests as http_requests
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
@@ -13,8 +18,17 @@ from backend.api.auth import (
     require_admin,
     verify_password,
 )
+from backend.api.config import (
+    SSO_AUDIENCE,
+    SSO_CLIENT_ID,
+    SSO_DEFAULT_ROLE,
+    SSO_ENABLED,
+    SSO_ISSUER_URL,
+    SSO_REDIRECT_URI,
+)
 from backend.api.database import get_pool
 
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -225,3 +239,137 @@ async def deactivate_user(
         "UPDATE rexus_users SET is_active = false WHERE id = $1", user_id
     )
     return {"status": "User deactivated"}
+
+
+# ── SSO (Okta OIDC / PKCE) ──────────────────────────────────────
+
+class SSOCallbackRequest(BaseModel):
+    code: str
+    code_verifier: str
+
+
+@router.get("/sso/config")
+async def sso_config():
+    """Return SSO configuration for the frontend. No auth required."""
+    if not SSO_ENABLED:
+        return {"enabled": False}
+
+    authorize_url = f"{SSO_ISSUER_URL}/v1/authorize"
+    return {
+        "enabled": True,
+        "client_id": SSO_CLIENT_ID,
+        "authorize_url": authorize_url,
+        "redirect_uri": SSO_REDIRECT_URI,
+        "audience": SSO_AUDIENCE,
+    }
+
+
+@router.post("/sso/callback")
+async def sso_callback(body: SSOCallbackRequest):
+    """
+    Exchange an Okta authorization code (with PKCE code_verifier) for tokens,
+    extract user info, find-or-create the user, and return a REX-US JWT.
+    """
+    if not SSO_ENABLED:
+        raise HTTPException(status_code=400, detail="SSO is not enabled")
+
+    # 1. Exchange auth code for tokens at Okta token endpoint
+    token_url = f"{SSO_ISSUER_URL}/v1/token"
+    token_payload = {
+        "grant_type": "authorization_code",
+        "client_id": SSO_CLIENT_ID,
+        "code": body.code,
+        "code_verifier": body.code_verifier,
+        "redirect_uri": SSO_REDIRECT_URI,
+    }
+
+    try:
+        token_resp = http_requests.post(
+            token_url,
+            data=token_payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=10,
+        )
+    except Exception as exc:
+        logger.error("SSO token exchange network error: %s", exc)
+        raise HTTPException(status_code=502, detail="Failed to contact identity provider")
+
+    if token_resp.status_code != 200:
+        logger.error("SSO token exchange failed (%s): %s", token_resp.status_code, token_resp.text)
+        raise HTTPException(status_code=401, detail="SSO token exchange failed")
+
+    token_data = token_resp.json()
+    id_token = token_data.get("id_token")
+    if not id_token:
+        raise HTTPException(status_code=401, detail="No id_token in SSO response")
+
+    # 2. Decode ID token to extract user info (Okta already validated it)
+    #    We do a base64 decode of the payload without cryptographic verification
+    #    since the token came directly from Okta over HTTPS.
+    try:
+        payload_b64 = id_token.split(".")[1]
+        # Fix padding
+        padding = 4 - len(payload_b64) % 4
+        if padding != 4:
+            payload_b64 += "=" * padding
+        id_claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+    except Exception as exc:
+        logger.error("Failed to decode id_token: %s", exc)
+        raise HTTPException(status_code=401, detail="Invalid id_token")
+
+    email = id_claims.get("email", "")
+    name = id_claims.get("name", "")
+    preferred_username = id_claims.get("preferred_username", "")
+
+    if not email:
+        raise HTTPException(status_code=401, detail="SSO token missing email claim")
+
+    # Use email prefix as username fallback
+    sso_username = preferred_username or email.split("@")[0]
+
+    # 3. Find or create user in rexus_users
+    pool = await get_pool()
+
+    row = await pool.fetchrow(
+        "SELECT id, username, email, role, is_active FROM rexus_users WHERE email = $1",
+        email,
+    )
+
+    if row:
+        # Existing user
+        if not row["is_active"]:
+            raise HTTPException(status_code=403, detail="Account is deactivated")
+        user_id = row["id"]
+        username = row["username"]
+        role = row["role"]
+    else:
+        # Auto-create user from SSO
+        # Check if username is already taken; if so, append a suffix
+        existing_username = await pool.fetchrow(
+            "SELECT id FROM rexus_users WHERE username = $1", sso_username
+        )
+        if existing_username:
+            sso_username = email.replace("@", "_at_").replace(".", "_")
+
+        row = await pool.fetchrow(
+            "INSERT INTO rexus_users (username, email, password_hash, role, must_change_password) "
+            "VALUES ($1, $2, $3, $4, false) RETURNING id, username, role",
+            sso_username,
+            email,
+            "",  # No password for SSO users
+            SSO_DEFAULT_ROLE,
+        )
+        user_id = row["id"]
+        username = row["username"]
+        role = row["role"]
+        logger.info("Auto-created SSO user: %s (%s) with role %s", username, email, role)
+
+    # 4. Update last_login
+    await pool.execute("UPDATE rexus_users SET last_login = NOW() WHERE id = $1", user_id)
+
+    # 5. Issue REX-US JWT
+    token = create_token(user_id, username, role)
+    return {
+        "token": token,
+        "user": {"id": user_id, "username": username, "role": role},
+    }

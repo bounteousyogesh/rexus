@@ -30,7 +30,7 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
-export async function put<T>(path: string, body: unknown): Promise<T> {
+async function put<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -40,7 +40,7 @@ export async function put<T>(path: string, body: unknown): Promise<T> {
   return res.json();
 }
 
-export async function del<T>(path: string): Promise<T> {
+async function del<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: 'DELETE',
     headers: { ...authHeaders() },
@@ -280,6 +280,14 @@ export interface LoginResponse {
   user: { id: number; username: string; role: string };
 }
 
+export interface SSOConfig {
+  enabled: boolean;
+  client_id?: string;
+  authorize_url?: string;
+  redirect_uri?: string;
+  audience?: string;
+}
+
 // ── Auth API ──────────────────────────────────────────────────────
 
 export const authApi = {
@@ -357,5 +365,28 @@ export const authApi = {
       throw new Error(err.detail || `Delete error: ${res.status}`);
     }
     return res.json();
+  },
+
+  ssoConfig: async (): Promise<SSOConfig | null> => {
+    try {
+      const res = await fetch(`${BASE}/auth/sso/config`);
+      if (!res.ok) return null;
+      return res.json();
+    } catch {
+      return null;
+    }
+  },
+
+  ssoCallback: async (code: string, codeVerifier: string): Promise<LoginResponse> => {
+    const res = await fetch(`${BASE}/auth/sso/callback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code, code_verifier: codeVerifier }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'SSO authentication failed' }));
+      throw new Error(err.detail || 'SSO authentication failed');
+    }
+    return res.json() as Promise<LoginResponse>;
   },
 };

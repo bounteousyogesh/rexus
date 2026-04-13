@@ -31,7 +31,7 @@ import requests
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-API_BASE = "http://localhost:8000/api/v1"
+API_BASE = os.getenv("REXUS_API_BASE", "http://localhost:8000/api/v1")
 
 
 def get_db():

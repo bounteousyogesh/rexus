@@ -1,6 +1,4 @@
 import os
-import warnings
-
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -17,6 +15,14 @@ if not DATABASE_URL:
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
 if LLM_PROVIDER == "openai" and not OPENAI_API_KEY:
-    warnings.warn("OPENAI_API_KEY is not set. LLM features will not work.", stacklevel=2)
+    raise RuntimeError("OPENAI_API_KEY environment variable is required when LLM_PROVIDER=openai.")
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")  # Optional; required when Claude integration is enabled
+
+# SSO / Okta OIDC configuration
+SSO_ENABLED = os.getenv("SSO_ENABLED", "false").lower() == "true"
+SSO_CLIENT_ID = os.getenv("SSO_CLIENT_ID", "")
+SSO_ISSUER_URL = os.getenv("SSO_ISSUER_URL", "")
+SSO_AUDIENCE = os.getenv("SSO_AUDIENCE", "")
+SSO_DEFAULT_ROLE = os.getenv("SSO_DEFAULT_ROLE", "analyst")
+SSO_REDIRECT_URI = os.getenv("SSO_REDIRECT_URI", "http://localhost:5173/auth/callback")

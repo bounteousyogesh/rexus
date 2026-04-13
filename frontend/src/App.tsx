@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Search, BarChart3, Layers, Activity, Zap, RefreshCw, Shield, LogOut, KeyRound } from 'lucide-react';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import LoginPage from './pages/Login';
+import AuthCallback from './pages/AuthCallback';
 import DashboardPage from './pages/Dashboard';
 import AnalyzePage from './pages/Analyze';
 import IncidentsPage from './pages/Incidents';
@@ -112,6 +113,11 @@ export default function App() {
 
 function AppGate() {
   const { isAuthenticated, isLoading } = useAuth();
+
+  // Handle SSO callback route before anything else
+  if (window.location.pathname === '/auth/callback') {
+    return <AuthCallback />;
+  }
 
   if (isLoading) {
     return (

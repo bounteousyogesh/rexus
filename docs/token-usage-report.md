@@ -1,6 +1,8 @@
 # REX-US — Token Usage & Cost Report
 
-Source: [OpenAI API Pricing](https://developers.openai.com/api/docs/pricing)
+Source: [OpenAI API Pricing](https://developers.openai.com/api/docs/pricing) | [AWS Bedrock Pricing](https://aws.amazon.com/bedrock/pricing/)
+
+> **Note:** In production, all LLM calls go through AWS Bedrock (no OpenAI API key needed). Local development uses OpenAI directly. See `LLM_PROVIDER` in the DevOps Guide.
 
 ---
 
@@ -57,13 +59,20 @@ Playbook generation is 99% of the cost. Embeddings and search are effectively fr
 
 ## Model Options
 
-| Model | Per Analysis | Monthly (25/day) | Quality |
-|-------|-------------|------------------|---------|
-| **GPT-5.4** | $0.064 | $35 | Best — recommended |
-| GPT-5.4 Mini | $0.019 | $11 | Good |
-| GPT-5.4 Nano | $0.005 | $3 | Basic |
+### Per-Analysis Cost Comparison
 
-### Full Pricing (per 1M tokens)
+| Model | Per Analysis | Monthly (25/day) | Quality | Environment |
+|-------|-------------|------------------|---------|-------------|
+| **GPT-5.4** (OpenAI) | $0.064 | $35 | Best | Local/Dev only |
+| GPT-5.4 Mini (OpenAI) | $0.019 | $11 | Good | Local/Dev only |
+| GPT-5.4 Nano (OpenAI) | $0.005 | $3 | Basic | Local/Dev only |
+| **Claude Opus** (Bedrock) | $0.247 | $136 | Best | **Production** |
+
+> **No OpenAI in production.** All production LLM traffic goes through AWS Bedrock exclusively. OpenAI models are available only for local development. Production uses Claude Opus (`anthropic.claude-opus-4-6-v1`) for chat/playbook and Cohere Embed v4 (`cohere.embed-v4:0`) for embeddings. Higher per-token cost but no API key management, integrated with AWS IAM, and no rate-limit concerns typical of direct API access.
+
+### Model Pricing Reference (per 1M tokens)
+
+#### OpenAI (Local/Development — `LLM_PROVIDER=openai`)
 
 | Model | Input | Cached Input | Output | Batch Input | Batch Output |
 |-------|-------|-------------|--------|-------------|-------------|
@@ -71,6 +80,15 @@ Playbook generation is 99% of the cost. Embeddings and search are effectively fr
 | GPT-5.4 Mini | $0.75 | $0.075 | $4.50 | $0.375 | $2.25 |
 | GPT-5.4 Nano | $0.20 | $0.02 | $1.25 | $0.10 | $0.625 |
 | text-embedding-3-small | $0.02 | — | — | — | — |
+
+#### AWS Bedrock (Production — `LLM_PROVIDER=bedrock`)
+
+| Model | Input | Output | Notes |
+|-------|-------|--------|-------|
+| Claude Opus (`anthropic.claude-opus-4-6-v1`) | $15.00 | $75.00 | Chat/playbook generation |
+| Cohere Embed v4 (`cohere.embed-v4:0`) | $0.10 | — | Embeddings (1536 dims) |
+
+Bedrock pricing is pay-per-use with no upfront commitment. Costs are billed through the AWS account — no separate API keys needed.
 
 ---
 
@@ -84,4 +102,4 @@ Playbook generation is 99% of the cost. Embeddings and search are effectively fr
 
 ---
 
-*Source: [OpenAI API Pricing](https://developers.openai.com/api/docs/pricing) | 2026-04-02 | REX-US v7*
+*Source: [OpenAI API Pricing](https://developers.openai.com/api/docs/pricing) | [AWS Bedrock Pricing](https://aws.amazon.com/bedrock/pricing/) | 2026-04-07 | REX-US v7*

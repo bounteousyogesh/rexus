@@ -3,14 +3,16 @@
 ## Architecture Overview
 
 ```
-Browser → ALB (HTTPS/SSO) → App Runner Container → PostgreSQL (RDS + pgvector)
-                                    ↓
-                              OpenAI API (embeddings + completions)
-                                    ↓
-                              ServiceNow API (read-only sync)
+Browser → ALB (HTTPS) → App Runner Container → PostgreSQL (RDS + pgvector)
+          (JWT auth)          ↓
+                        LLM Provider (embeddings + completions)
+                          ├── Local:  OpenAI API (gpt-4o + text-embedding-3-small)
+                          └── Prod:   AWS Bedrock (Claude Opus + Cohere Embed v4)
+                              ↓
+                        ServiceNow API (read-only sync)
 ```
 
-Single container runs both the React frontend (static files) and the FastAPI backend.
+Single container runs both the React frontend (static files) and the FastAPI backend. Authentication is handled via JWT tokens (bcrypt + PyJWT).
 
 ---
 
@@ -23,7 +25,7 @@ All configuration is via environment variables. The application fails to start i
 | Variable | Description | Example |
 |----------|-------------|---------|
 | `DATABASE_URL` | PostgreSQL connection string | `postgresql://rexus:pass@host:5432/rexus` |
-| `OPENAI_API_KEY` | OpenAI API key for embeddings and completions | `sk-...` |
+| `OPENAI_API_KEY` | OpenAI API key (required when `LLM_PROVIDER=openai`) | `sk-...` |
 
 ### Required for ServiceNow Sync
 
@@ -33,17 +35,42 @@ All configuration is via environment variables. The application fails to start i
 | `SERVICENOW_CLIENT_ID` | OAuth 2.0 client ID |
 | `SERVICENOW_CLIENT_SECRET` | OAuth 2.0 client secret |
 
+### LLM Provider
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_PROVIDER` | `openai` | LLM backend: `openai` (local dev) or `bedrock` (production/AWS) |
+| `LLM_CHAT_MODEL` | `gpt-4o` / `anthropic.claude-opus-4-6-v1` | Chat/playbook model (default depends on provider) |
+| `LLM_EMBED_MODEL` | `text-embedding-3-small` / `cohere.embed-v4:0` | Embedding model (default depends on provider) |
+| `AWS_REGION` | `us-east-1` | AWS region for Bedrock (only when `LLM_PROVIDER=bedrock`) |
+| `BEDROCK_ROLE_ARN` | — | Optional IAM role ARN for Bedrock cross-account access |
+
+When `LLM_PROVIDER=bedrock`, no `OPENAI_API_KEY` is needed. Authentication uses the standard AWS credential chain (IAM role, env vars, or `~/.aws/credentials`).
+
+### Authentication
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REXUS_JWT_SECRET` | Auto-generated | Secret for signing JWT tokens. Set explicitly in production to persist across restarts |
+| `REXUS_ADMIN_PASSWORD` | `RexUS@2026!` | Initial admin account password (used on first startup only) |
+| `REXUS_ADMIN_KEY` | — | Optional key to gate `/health/detailed` endpoint |
+
 ### Optional
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REXUS_ENV` | `development` | Set to `production` to disable Swagger docs |
+| `REXUS_ENV` | `development` | Set to `production` to disable Swagger docs and PDF upload |
+| `REXUS_ORG_NAME` | — | Organization name displayed in the UI header |
 | `CORS_ORIGINS` | `http://localhost:3000,http://localhost:5173` | Comma-separated allowed origins |
+| `VITE_API_URL` | — | Frontend proxy target for API calls (build-time) |
+| `REXUS_API_BASE` | — | API base URL for backend scripts |
 | `SYNC_DELTA_MAX` | `2000` | Max incidents fetched per delta check |
 | `SERVICENOW_TIMEOUT_S` | `30` | HTTP timeout for ServiceNow calls (seconds) |
-| `RATE_LIMIT_ANALYZE` | `20/minute` | Rate limit for /analyze endpoints |
-| `RATE_LIMIT_SYNC` | `5/minute` | Rate limit for /sync/import |
+| `RATE_LIMIT_ANALYZE` | `20/minute` | Rate limit for /analyze endpoints (slowapi) |
+| `RATE_LIMIT_SYNC` | `5/minute` | Rate limit for /sync/import (slowapi) |
 | `RATE_LIMIT_DEFAULT` | `60/minute` | Default rate limit for all other endpoints |
+| `DB_POOL_MIN` | `2` | Minimum asyncpg connection pool size |
+| `DB_POOL_MAX` | `10` | Maximum asyncpg connection pool size |
 
 ---
 
@@ -60,12 +87,13 @@ CREATE EXTENSION IF NOT EXISTS pg_trgm;
 psql -f backend/migrations/001_rexus_schema.sql
 psql -f backend/migrations/002_enriched_schema.sql
 psql -f backend/migrations/003_token_usage.sql
+psql -f backend/migrations/005_auth.sql
 ```
 
 ### Connection Pool
 
 The backend uses `asyncpg` with a connection pool:
-- `min_size=2, max_size=10` (hardcoded, configurable in `database.py`)
+- `min_size=2, max_size=10` (configurable via `DB_POOL_MIN` / `DB_POOL_MAX`)
 - `command_timeout=30` seconds
 - Double-checked locking with `asyncio.Lock` prevents race conditions on startup
 
@@ -102,6 +130,15 @@ Response: {"status": "healthy", "database": "connected", "incidents_count": 1689
 ```
 
 Use this for ALB health checks and container readiness probes. No authentication required.
+
+**Detailed health check:**
+
+```
+GET /health/detailed
+Response: 7 subsystem checks (database, LLM provider, ServiceNow, embeddings, token usage, auth, config)
+```
+
+If `REXUS_ADMIN_KEY` is set, this endpoint requires the key as a query parameter (`?key=...`) or `X-Admin-Key` header. Without the env var set, the endpoint is open.
 
 ### Startup Sequence
 
@@ -198,6 +235,65 @@ In production, set log level to `INFO`. Set to `DEBUG` only for troubleshooting.
 
 ---
 
+## Authentication
+
+### Default Admin Account
+
+On first startup, if the `rexus_users` table is empty, REX-US auto-creates an admin account:
+- **Username:** `admin`
+- **Password:** Value of `REXUS_ADMIN_PASSWORD`, or `RexUS@2026!` if not set
+
+Change this password immediately after first login via the Admin page or API.
+
+### First Login
+
+1. Navigate to the REX-US URL in your browser
+2. You will be redirected to the login page
+3. Enter `admin` / `RexUS@2026!` (or your configured admin password)
+4. Change the admin password immediately
+
+### User Management
+
+Admins can manage users via the Admin page in the UI or the `/api/v1/auth/users` API:
+- Create new users with `admin`, `analyst`, or `viewer` roles
+- Reset passwords for any user
+- Deactivate/reactivate user accounts
+
+### JWT Token Details
+
+- Tokens expire after **24 hours** — users must re-login daily
+- Tokens are signed with `REXUS_JWT_SECRET` using HS256
+- If `REXUS_JWT_SECRET` is not set, a random secret is generated on startup (all tokens invalidated on restart)
+
+---
+
+## LLM Provider Configuration
+
+REX-US supports two LLM backends, controlled by the `LLM_PROVIDER` environment variable:
+
+### Local Development (`LLM_PROVIDER=openai`)
+
+- **Chat model:** `gpt-4o` (configurable via `LLM_CHAT_MODEL`)
+- **Embedding model:** `text-embedding-3-small` (configurable via `LLM_EMBED_MODEL`)
+- **Requires:** `OPENAI_API_KEY` environment variable
+- Both models produce 1536-dimension embeddings
+
+### Production (`LLM_PROVIDER=bedrock`)
+
+- **Chat model:** `anthropic.claude-opus-4-6-v1` (configurable via `LLM_CHAT_MODEL`)
+- **Embedding model:** `cohere.embed-v4:0` (configurable via `LLM_EMBED_MODEL`)
+- **Requires:** AWS credentials (IAM role, env vars, or `~/.aws/credentials`) — no API keys
+- Uses `boto3` for all Bedrock API calls
+- Both models produce 1536-dimension embeddings (compatible with existing pgvector indexes)
+- Optional: `BEDROCK_ROLE_ARN` for cross-account access, `AWS_REGION` (default `us-east-1`)
+
+### Additional Monitoring Endpoints
+
+- `GET /api/v1/config/llm` — Returns current LLM provider, models, and configuration (no secrets exposed)
+- `GET /api/v1/token-usage` — Token usage and cost tracking for both OpenAI and Bedrock calls
+
+---
+
 ## Operational Procedures
 
 ### Weekly: Sync New Incidents
@@ -242,15 +338,15 @@ VACUUM ANALYZE rexus_analysis_log;
 VACUUM ANALYZE rexus_token_usage;
 ```
 
-### Incident Response: OpenAI API Down
+### Incident Response: LLM Provider Down
 
-If OpenAI is unreachable:
+If the LLM provider (OpenAI or Bedrock) is unreachable:
 - `/analyze` will return 500 errors (embedding and playbook generation both fail)
 - `/sync/import` will fail on embedding step
 - `/search` will fail on embedding step
-- **All read-only endpoints** (`/incidents`, `/clusters`, `/analytics`, `/health`) continue working — they don't use OpenAI
+- **All read-only endpoints** (`/incidents`, `/clusters`, `/analytics`, `/health`) continue working — they don't use the LLM provider
 
-The 30-second timeout on all OpenAI calls prevents indefinite hangs.
+The 30-second timeout on all LLM calls prevents indefinite hangs. Check `/health/detailed` for provider-specific diagnostics.
 
 ### Incident Response: ServiceNow API Down
 
@@ -285,4 +381,4 @@ The knowledge base (embeddings) is stored in PostgreSQL. If the database is rest
 
 ---
 
-*REX-US v7 | DevOps Guide v1.0*
+*REX-US v7 | DevOps Guide v1.1*
