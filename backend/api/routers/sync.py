@@ -50,7 +50,7 @@ def _get_sn_client():
 # before the API is deployed). Falls back to the incident_catalog.csv
 # exported from the dev environment.
 
-_CATALOG_PATH = / "data" / "incident_catalog.csv"
+_CATALOG_PATH = "/app/backend/data" / "incident_catalog.csv"
 
 
 def _load_from_catalog(
