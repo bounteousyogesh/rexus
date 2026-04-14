@@ -27,7 +27,7 @@ export default function AnalyzePage() {
   const [expandedInc, setExpandedInc] = useState<string | null>(null);
   const [error, setError] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
-  const [isDev, setIsDev] = useState(true);
+  const [isDev, setIsDev] = useState(false);
 
   // Check environment — hide PDF upload in production
   useEffect(() => {
