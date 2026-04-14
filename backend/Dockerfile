@@ -27,6 +27,8 @@ WORKDIR /app/backend
 
 COPY --from=builder /opt/venv /opt/venv
 COPY . .
+# Copy repo-root data directory so CSV catalog is available in the image
+COPY --chown=appuser:appuser ../data /app/data
 
 RUN useradd --create-home --shell /usr/sbin/nologin appuser \
     && chown -R appuser:appuser /app
