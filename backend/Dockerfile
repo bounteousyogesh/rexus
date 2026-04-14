@@ -5,10 +5,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1
 
-# Install into /app/backend so the source tree matches 'backend.api.*' imports
 WORKDIR /app/backend
 
-COPY requirements.txt .
+COPY backend/requirements.txt ./requirements.txt
 
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \
@@ -21,12 +20,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:$PATH" \
     PYTHONPATH="/app"
 
-# WORKDIR is /app — source is copied to /app/backend/
-# so Python can resolve 'backend.api.*' imports via PYTHONPATH=/app
 WORKDIR /app/backend
 
 COPY --from=builder /opt/venv /opt/venv
-COPY . .
+COPY backend/ /app/backend/
+COPY data/ /app/data/
 
 RUN useradd --create-home --shell /usr/sbin/nologin appuser \
     && chown -R appuser:appuser /app

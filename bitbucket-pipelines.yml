@@ -9,11 +9,19 @@ definitions:
         export IMAGE_NAME="${BITBUCKET_REPO_SLUG}-${SERVICE}"
         export IMAGE_TAG="${BITBUCKET_TAG:-${BITBUCKET_COMMIT:0:6}}"
 
+        if [ "${SERVICE}" = "backend" ]; then
+          BUILD_CONTEXT="."
+          DOCKERFILE_PATH="backend/Dockerfile"
+        else
+          BUILD_CONTEXT="${SERVICE}"
+          DOCKERFILE_PATH="${SERVICE}/Dockerfile"
+        fi
+
         echo "Building Docker image ${IMAGE_NAME}:${IMAGE_TAG}"
         docker build \
-          -f "${SERVICE}/Dockerfile" \
+          -f "${DOCKERFILE_PATH}" \
           -t "${IMAGE_NAME}:${IMAGE_TAG}" \
-          "${SERVICE}"
+          "${BUILD_CONTEXT}"
 
   steps:
     - step: &build_step
@@ -50,6 +58,7 @@ pipelines:
             changesets:
               includePaths:
                 - "backend/**"
+                - "data/**"
           script:
             - export SERVICE="backend"
             - *docker_build
