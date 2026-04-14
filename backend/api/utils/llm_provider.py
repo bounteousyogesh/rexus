@@ -20,6 +20,7 @@ import os
 import json
 import logging
 import asyncio
+import warnings
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -140,7 +141,10 @@ def _get_openai_client():
         from openai import AsyncOpenAI
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
+            logger.warning(
+                "OPENAI_API_KEY is not set — LLM features will not work. "
+                "Set LLM_PROVIDER=bedrock for AWS production deployments."
+            )
         _openai_client = AsyncOpenAI(api_key=api_key)
         logger.info(f"OpenAI client initialized")
     return _openai_client
