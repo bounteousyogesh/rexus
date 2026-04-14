@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Install into /app/backend so the source tree matches 'backend.api.*' imports
 WORKDIR /app/backend
 
-COPY backend/requirements.txt .
+COPY requirements.txt .
 
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \
@@ -26,9 +26,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app/backend
 
 COPY --from=builder /opt/venv /opt/venv
-# Build context is the repo root — copy backend source and repo-level data
-COPY backend/ .
-COPY data/ /app/data/
+COPY . .
 
 RUN useradd --create-home --shell /usr/sbin/nologin appuser \
     && chown -R appuser:appuser /app
