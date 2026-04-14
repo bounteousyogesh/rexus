@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Install into /app/backend so the source tree matches 'backend.api.*' imports
 WORKDIR /app/backend
 
-COPY requirements.txt .
+COPY backend/requirements.txt .
 
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \
@@ -26,9 +26,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app/backend
 
 COPY --from=builder /opt/venv /opt/venv
-COPY . .
-# Copy repo-root data directory so CSV catalog is available in the image
-COPY --chown=appuser:appuser ../data /app/data
+# Build context is the repo root — copy backend source and repo-level data
+COPY backend/ .
+COPY data/ /app/data/
 
 RUN useradd --create-home --shell /usr/sbin/nologin appuser \
     && chown -R appuser:appuser /app

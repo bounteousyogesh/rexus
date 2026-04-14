@@ -7,13 +7,11 @@ definitions:
 
         export DOCKER_BUILDKIT=0
         export IMAGE_NAME="${BITBUCKET_REPO_SLUG}-${SERVICE}"
-        export IMAGE_TAG="${BITBUCKET_TAG:-${BITBUCKET_COMMIT:0:6}}"
-
-        echo "Building Docker image ${IMAGE_NAME}:${IMAGE_TAG}"
+        export IMAGE_TAG="${BITBUCKET_TAG:-${BITBUCKET_COMMIT:0:6}}"        echo "Building Docker image ${IMAGE_NAME}:${IMAGE_TAG}"
         docker build \
           -f "${SERVICE}/Dockerfile" \
           -t "${IMAGE_NAME}:${IMAGE_TAG}" \
-          "${SERVICE}"
+          .
 
   steps:
     - step: &build_step
