@@ -27,10 +27,26 @@ logger = logging.getLogger(__name__)
 
 # ── Configuration ──────────────────────────────────────────────────
 
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
+LLM_PROVIDER   = os.getenv("LLM_PROVIDER",   "openai")
 LLM_CHAT_MODEL = os.getenv("LLM_CHAT_MODEL", "gpt-4o")
 LLM_EMBED_MODEL = os.getenv("LLM_EMBED_MODEL", "text-embedding-3-small")
-AWS_REGION = os.getenv("AWS_REGION", "us-west-2")
+AWS_REGION     = os.getenv("AWS_REGION",     "us-west-2")
+
+# Bedrock inference profile ARNs  (used as modelId instead of plain model strings)
+BEDROCK_CHAT_MODEL_ID  = os.getenv(
+    "BEDROCK_CHAT_MODEL_ID",
+    "arn:aws:bedrock:us-west-2:288761730964:application-inference-profile/yptc9mo9d8it",
+)
+BEDROCK_EMBED_MODEL_ID = os.getenv(
+    "BEDROCK_EMBED_MODEL_ID",
+    "arn:aws:bedrock:us-west-2:288761730964:application-inference-profile/o1pfx36i19zl",
+)
+
+# IAM role to assume before calling Bedrock (leave blank to use the task's own role)
+BEDROCK_ROLE_ARN = os.getenv(
+    "BEDROCK_ROLE_ARN",
+    "arn:aws:iam::288761730964:role/dt-rexus-stg",
+)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -41,12 +57,37 @@ _boto_client = None
 
 
 def _get_boto_client():
-    """Lazy-init boto3 bedrock-runtime client."""
+    """Lazy-init boto3 bedrock-runtime client.
+
+    If BEDROCK_ROLE_ARN is set the client assumes that IAM role via STS first
+    and uses the resulting temporary credentials.  This is required when the
+    ECS task role does not have bedrock:InvokeModel directly but is allowed to
+    sts:AssumeRole into a role that does.
+    """
     global _boto_client
     if _boto_client is None:
         import boto3
-        _boto_client = boto3.client("bedrock-runtime", region_name=AWS_REGION)
-        logger.info(f"Bedrock client initialized (region={AWS_REGION})")
+
+        if BEDROCK_ROLE_ARN:
+            logger.info("Assuming Bedrock role: %s", BEDROCK_ROLE_ARN)
+            sts = boto3.client("sts", region_name=AWS_REGION)
+            creds = sts.assume_role(
+                RoleArn=BEDROCK_ROLE_ARN,
+                RoleSessionName="rexus-bedrock-session",
+                DurationSeconds=3600,
+            )["Credentials"]
+            _boto_client = boto3.client(
+                "bedrock-runtime",
+                region_name=AWS_REGION,
+                aws_access_key_id=creds["AccessKeyId"],
+                aws_secret_access_key=creds["SecretAccessKey"],
+                aws_session_token=creds["SessionToken"],
+            )
+            logger.info("Bedrock client initialised via assumed role (region=%s)", AWS_REGION)
+        else:
+            _boto_client = boto3.client("bedrock-runtime", region_name=AWS_REGION)
+            logger.info("Bedrock client initialised with task role (region=%s)", AWS_REGION)
+
     return _boto_client
 
 
@@ -59,10 +100,9 @@ async def _bedrock_chat(model, messages, max_tokens=1500, temperature=0.1):
     for msg in messages:
         if msg["role"] == "system":
             system_parts.append(msg["content"])
-        else:
-            chat_messages.append({"role": msg["role"], "content": msg["content"]})
+        else:            chat_messages.append({"role": msg["role"], "content": msg["content"]})
 
-    if model.startswith("anthropic."):
+    if "anthropic" in model.lower():
         body = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": max_tokens,
@@ -82,13 +122,12 @@ async def _bedrock_chat(model, messages, max_tokens=1500, temperature=0.1):
         client.invoke_model,
         modelId=model,
         contentType="application/json",
-        accept="application/json",
-        body=json.dumps(body),
+        accept="application/json",        body=json.dumps(body),
     )
 
     result = json.loads(response["body"].read())
 
-    if model.startswith("anthropic."):
+    if "anthropic" in model.lower():
         content = result.get("content", [{}])
         text = content[0].get("text", "") if content else ""
         input_tokens = result.get("usage", {}).get("input_tokens", 0)
@@ -230,7 +269,7 @@ def get_embed_model() -> str:
 async def embed_text(text: str) -> list[float]:
     """Generate embedding for a single text."""
     if LLM_PROVIDER == "bedrock":
-        return await _bedrock_embed(LLM_EMBED_MODEL, text)
+        return await _bedrock_embed(BEDROCK_EMBED_MODEL_ID, text)
     return await _openai_embed(LLM_EMBED_MODEL, text)
 
 
@@ -243,7 +282,7 @@ async def chat_complete(messages: list[dict], max_tokens: int = 1500, temperatur
     Works identically for both providers.
     """
     if LLM_PROVIDER == "bedrock":
-        return await _bedrock_chat(LLM_CHAT_MODEL, messages, max_tokens, temperature)
+        return await _bedrock_chat(BEDROCK_CHAT_MODEL_ID, messages, max_tokens, temperature)
     return await _openai_chat(LLM_CHAT_MODEL, messages, max_tokens, temperature)
 
 
@@ -257,4 +296,7 @@ def get_provider_info() -> dict:
     }
     if LLM_PROVIDER == "bedrock":
         info["region"] = AWS_REGION
+        info["chat_model"] = BEDROCK_CHAT_MODEL_ID
+        info["embed_model"] = BEDROCK_EMBED_MODEL_ID
+        info["role_arn"] = BEDROCK_ROLE_ARN or "task-role (no assume)"
     return info
