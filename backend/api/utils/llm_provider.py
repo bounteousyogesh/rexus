@@ -48,6 +48,11 @@ BEDROCK_ROLE_ARN = os.getenv(
     "arn:aws:iam::288761730964:role/dt-rexus-stg",
 )
 
+# Embed request body format: "titan" (default) | "cohere"
+# Use "titan" for amazon.titan-embed-* models (body: {"inputText": "..."})
+# Use "cohere" for cohere.embed-* models     (body: {"texts": [...], "input_type": "..."})
+BEDROCK_EMBED_MODEL_TYPE = os.getenv("BEDROCK_EMBED_MODEL_TYPE", "titan")
+
 
 # ═══════════════════════════════════════════════════════════════════
 # Bedrock Provider (boto3) — for AWS production
@@ -159,13 +164,22 @@ async def _bedrock_chat(model, messages, max_tokens=1500, temperature=0.1):
 
 
 async def _bedrock_embed(model, text):
-    """Generate embedding via boto3 invoke_model. Supports Titan and OpenAI models."""
+    """Generate embedding via boto3 invoke_model.
+
+    Body format is determined by BEDROCK_EMBED_MODEL_TYPE (not the model ARN,
+    which may be an opaque inference profile and contain no model family hint):
+      titan  — {"inputText": "..."}                (amazon.titan-embed-*)
+      cohere — {"texts": [...], "input_type": ...}  (cohere.embed-*)
+    """
     client = _get_boto_client()
 
-    if "titan" in model.lower():
-        body = {"inputText": text}
+    model_type = BEDROCK_EMBED_MODEL_TYPE.lower()
+
+    if model_type == "cohere":
+        body = {"texts": [text], "input_type": "search_document"}
     else:
-        body = {"input": text, "model": model}
+        # Default: titan
+        body = {"inputText": text}
 
     response = await asyncio.to_thread(
         client.invoke_model,
@@ -177,11 +191,12 @@ async def _bedrock_embed(model, text):
 
     result = json.loads(response["body"].read())
 
-    if "titan" in model.lower():
-        return result.get("embedding", [])
+    if model_type == "cohere":
+        embeddings = result.get("embeddings", [[]])
+        return embeddings[0] if embeddings else []
     else:
-        data = result.get("data", [{}])
-        return data[0].get("embedding", []) if data else []
+        # titan returns {"embedding": [...], "inputTextTokenCount": N}
+        return result.get("embedding", [])
 
 
 # ═══════════════════════════════════════════════════════════════════
