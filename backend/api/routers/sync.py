@@ -15,7 +15,7 @@ import re
 import csv
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 from typing import Annotated
 
@@ -188,6 +188,18 @@ def _flatten_custom_api(data: dict) -> dict:
     def parse_bool(v):
         return v in (True, 'true', '1', 1)
 
+    def parse_date(v):
+        """Parse a date string into a datetime.date object (or None)."""
+        if not v:
+            return None
+        if isinstance(v, date):
+            return v
+        try:
+            return datetime.strptime(str(v)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            logger.warning("Could not parse date %r — storing NULL", v)
+            return None
+
     def parse_ts(v):
         """Parse a ServiceNow timestamp string into a datetime object (or None)."""
         if not v:
@@ -233,7 +245,7 @@ def _flatten_custom_api(data: dict) -> dict:
         "u_order_number": order.get("u_order_number"),
         "u_total_order_amount": order.get("u_total_order_amount"),
         "u_order_type": order.get("u_order_type"),
-        "u_order_date": order.get("u_order_date") or None,
+        "u_order_date": parse_date(order.get("u_order_date")),
         "u_financial_impact": order.get("u_financial_impact"),
         "u_correction": parse_bool(inc.get("u_correction")),
         "u_correction_type": order.get("u_correction_type"),
