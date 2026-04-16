@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")
 LLM_CHAT_MODEL = os.getenv("LLM_CHAT_MODEL", "gpt-4o")
 LLM_EMBED_MODEL = os.getenv("LLM_EMBED_MODEL", "text-embedding-3-small")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+AWS_REGION = os.getenv("AWS_REGION", "us-west-2")
 
 
 # ═══════════════════════════════════════════════════════════════════
