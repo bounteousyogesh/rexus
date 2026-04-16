@@ -105,22 +105,6 @@ pipelines:
             - *ecr_push
 
   custom:
-    build-backend-image:
-      - step:
-          <<: *build_step
-          name: Manually build backend image
-          script:
-            - export SERVICE="backend"
-            - *docker_build
-
-    build-frontend-image:
-      - step:
-          <<: *build_step
-          name: Manually build frontend image
-          script:
-            - export SERVICE="frontend"
-            - *docker_build
-
     push-backend-image:
       - step:
           <<: *push_step
