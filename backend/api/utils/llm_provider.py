@@ -191,12 +191,40 @@ async def _bedrock_embed(model, text):
 
     result = json.loads(response["body"].read())
 
+    logger.debug(
+        "_bedrock_embed response | model=%s model_type=%s top_keys=%s",
+        model, model_type, list(result.keys()),
+    )
+
     if model_type == "cohere":
-        embeddings = result.get("embeddings", [[]])
-        return embeddings[0] if embeddings else []
+        # Cohere Embed v3 returns: {"embeddings": [[float, ...]]}
+        # Cohere Embed v4 returns: {"embeddings": {"float": [[float, ...]]}}
+        embeddings = result.get("embeddings", [])
+        logger.debug(
+            "_bedrock_embed cohere | embeddings type=%s keys=%s",
+            type(embeddings).__name__,
+            list(embeddings.keys()) if isinstance(embeddings, dict) else f"list[{len(embeddings)}]",
+        )
+        if isinstance(embeddings, dict):
+            # v4 format
+            float_embeddings = embeddings.get("float", [[]])
+            logger.debug("_bedrock_embed cohere v4 | float vectors=%d dim=%d",
+                         len(float_embeddings),
+                         len(float_embeddings[0]) if float_embeddings else 0)
+            return float_embeddings[0] if float_embeddings else []
+        else:
+            # v3 format
+            logger.debug("_bedrock_embed cohere v3 | vectors=%d dim=%d",
+                         len(embeddings),
+                         len(embeddings[0]) if embeddings else 0)
+            return embeddings[0] if embeddings else []
     else:
         # titan returns {"embedding": [...], "inputTextTokenCount": N}
-        return result.get("embedding", [])
+        embedding = result.get("embedding", [])
+        logger.debug("_bedrock_embed titan | dim=%d tokens=%s",
+                     len(embedding),
+                     result.get("inputTextTokenCount", "?"))
+        return embedding
 
 
 # ═══════════════════════════════════════════════════════════════════
