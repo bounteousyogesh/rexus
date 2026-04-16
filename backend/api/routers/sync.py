@@ -491,6 +491,7 @@ async def sync_import(request: Request, req: ImportRequest):
 
             # Use provider-agnostic embed function
             embedding = await _embed_text_fn(embedding_text)
+            embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
 
             # Track embedding token usage
             emb_tokens = len(embedding_text) // 4
@@ -536,7 +537,7 @@ async def sync_import(request: Request, req: ImportRequest):
                     flat["reassignment_count"], flat["reopen_count"], flat["made_sla"], flat["escalation"],
                     flat["work_notes"], flat["comments"],
                     flat["opened_at"], flat["resolved_at"], flat["closed_at"],
-                    embedding_text, embedding,
+                    embedding_text, embedding_str,
                 )
 
             imported += 1
