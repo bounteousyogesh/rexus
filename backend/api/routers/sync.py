@@ -530,7 +530,8 @@ async def sync_import(request: Request, req: ImportRequest):
 
         except Exception as e:
             failed += 1
-            results.append({"incident": inc_num, "status": "error", "error": str(e)[:100]})
+            logger.error("Failed to import %s: %s", inc_num, e, exc_info=True)
+            results.append({"incident": inc_num, "status": "error", "error": str(e)[:500]})
 
     skipped = total - imported - failed
     logger.info(f"Sync import complete — imported={imported}, skipped={skipped}, failed={failed}")
