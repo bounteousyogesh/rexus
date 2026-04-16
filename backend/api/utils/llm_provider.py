@@ -195,7 +195,7 @@ async def _bedrock_embed(model, text):
         "_bedrock_embed response | model=%s model_type=%s top_keys=%s",
         model, model_type, list(result.keys()),
     )
-
+    # Cohere Embed v3 returns: {"embeddings": [[float, ...]]}
     if model_type == "cohere":
         # Cohere Embed v3 returns: {"embeddings": [[float, ...]]}
         # Cohere Embed v4 returns: {"embeddings": {"float": [[float, ...]]}}
