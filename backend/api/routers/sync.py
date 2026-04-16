@@ -188,6 +188,20 @@ def _flatten_custom_api(data: dict) -> dict:
     def parse_bool(v):
         return v in (True, 'true', '1', 1)
 
+    def parse_ts(v):
+        """Parse a ServiceNow timestamp string into a datetime object (or None)."""
+        if not v:
+            return None
+        if isinstance(v, datetime):
+            return v
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(str(v)[:19], fmt)
+            except ValueError:
+                continue
+        logger.warning("Could not parse timestamp %r — storing NULL", v)
+        return None
+
     return {
         "number": inc.get("number"),
         "sys_id": inc.get("sys_id"),
@@ -234,9 +248,9 @@ def _flatten_custom_api(data: dict) -> dict:
         "escalation": ops.get("escalation_display"),
         "work_notes": wn_text,
         "comments": cm_text,
-        "opened_at": inc.get("opened_at"),
-        "resolved_at": inc.get("u_resolved_at"),
-        "closed_at": inc.get("closed_at"),
+        "opened_at": parse_ts(inc.get("opened_at")),
+        "resolved_at": parse_ts(inc.get("u_resolved_at")),
+        "closed_at": parse_ts(inc.get("closed_at")),
     }
 
 
@@ -505,7 +519,7 @@ async def sync_import(request: Request, req: ImportRequest):
                         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
                         $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,
                         $32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,
-                        $46::timestamp,$47::timestamp,$48::timestamp,
+                        $46,$47,$48,
                         'synced', $49, $50
                     ) ON CONFLICT (incident_number) DO NOTHING
                 """,

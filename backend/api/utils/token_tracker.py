@@ -31,12 +31,26 @@ MODEL_PRICING = {
     "gpt-5.4-nano": {"input": 0.20, "output": 1.25},
     "gpt-4o": {"input": 2.50, "output": 10.00},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    # AWS Bedrock — Cohere Embed v3/v4 (price per 1M tokens)
+    "cohere.embed-english-v3": {"input": 0.10, "output": 0.0},
+    "cohere.embed-multilingual-v3": {"input": 0.10, "output": 0.0},
+    "cohere.embed-v4:0": {"input": 0.10, "output": 0.0},
+    # AWS Bedrock — Anthropic Claude (approximate, varies by version)
+    "anthropic.claude-3-5-sonnet": {"input": 3.00, "output": 15.00},
+    "anthropic.claude-3-haiku": {"input": 0.25, "output": 1.25},
 }
 
 
 def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     """Estimate cost in USD for a single API call."""
     pricing = MODEL_PRICING.get(model)
+    if pricing is None:
+        # Bedrock inference profile ARNs contain the model family name — do substring match
+        model_lower = model.lower()
+        for key, p in MODEL_PRICING.items():
+            if key in model_lower:
+                pricing = p
+                break
     if pricing is None:
         logger.warning(
             "Unknown model '%s' — using default pricing ($2.50/$15.00 per 1M tokens). "
