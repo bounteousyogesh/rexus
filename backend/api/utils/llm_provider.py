@@ -54,28 +54,41 @@ BEDROCK_ROLE_ARN = os.getenv(
 # ═══════════════════════════════════════════════════════════════════
 
 _boto_client = None
+_boto_client_expiry = None  # datetime when the assumed-role credentials expire
 
 
 def _get_boto_client():
     """Lazy-init boto3 bedrock-runtime client.
 
     If BEDROCK_ROLE_ARN is set the client assumes that IAM role via STS first
-    and uses the resulting temporary credentials.  This is required when the
-    ECS task role does not have bedrock:InvokeModel directly but is allowed to
-    sts:AssumeRole into a role that does.
+    and uses the resulting temporary credentials.  Credentials are refreshed
+    automatically 5 minutes before they expire (default session = 1 h).
     """
-    global _boto_client
-    if _boto_client is None:
-        import boto3
+    global _boto_client, _boto_client_expiry
+    import boto3
+    from datetime import datetime, timezone, timedelta
 
+    # Refresh if credentials are about to expire (within 5 minutes)
+    needs_refresh = (
+        _boto_client is None
+        or (
+            BEDROCK_ROLE_ARN
+            and _boto_client_expiry is not None
+            and datetime.now(timezone.utc) >= _boto_client_expiry - timedelta(minutes=5)
+        )
+    )
+
+    if needs_refresh:
         if BEDROCK_ROLE_ARN:
             logger.info("Assuming Bedrock role: %s", BEDROCK_ROLE_ARN)
             sts = boto3.client("sts", region_name=AWS_REGION)
-            creds = sts.assume_role(
+            response = sts.assume_role(
                 RoleArn=BEDROCK_ROLE_ARN,
                 RoleSessionName="rexus-bedrock-session",
                 DurationSeconds=3600,
-            )["Credentials"]
+            )
+            creds = response["Credentials"]
+            _boto_client_expiry = creds["Expiration"]
             _boto_client = boto3.client(
                 "bedrock-runtime",
                 region_name=AWS_REGION,
@@ -83,7 +96,10 @@ def _get_boto_client():
                 aws_secret_access_key=creds["SecretAccessKey"],
                 aws_session_token=creds["SessionToken"],
             )
-            logger.info("Bedrock client initialised via assumed role (region=%s)", AWS_REGION)
+            logger.info(
+                "Bedrock client initialised via assumed role (region=%s, expires=%s)",
+                AWS_REGION, _boto_client_expiry.isoformat(),
+            )
         else:
             _boto_client = boto3.client("bedrock-runtime", region_name=AWS_REGION)
             logger.info("Bedrock client initialised with task role (region=%s)", AWS_REGION)
@@ -100,7 +116,8 @@ async def _bedrock_chat(model, messages, max_tokens=1500, temperature=0.1):
     for msg in messages:
         if msg["role"] == "system":
             system_parts.append(msg["content"])
-        else:            chat_messages.append({"role": msg["role"], "content": msg["content"]})
+        else:
+            chat_messages.append({"role": msg["role"], "content": msg["content"]})
 
     if "anthropic" in model.lower():
         body = {
@@ -122,7 +139,8 @@ async def _bedrock_chat(model, messages, max_tokens=1500, temperature=0.1):
         client.invoke_model,
         modelId=model,
         contentType="application/json",
-        accept="application/json",        body=json.dumps(body),
+        accept="application/json",
+        body=json.dumps(body),
     )
 
     result = json.loads(response["body"].read())
