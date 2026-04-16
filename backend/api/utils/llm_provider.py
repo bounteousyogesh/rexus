@@ -48,10 +48,10 @@ BEDROCK_ROLE_ARN = os.getenv(
     "arn:aws:iam::288761730964:role/dt-rexus-stg",
 )
 
-# Embed request body format: "titan" (default) | "cohere"
+# Embed request body format: "titan" | "cohere" (default)
 # Use "titan" for amazon.titan-embed-* models (body: {"inputText": "..."})
 # Use "cohere" for cohere.embed-* models     (body: {"texts": [...], "input_type": "..."})
-BEDROCK_EMBED_MODEL_TYPE = os.getenv("BEDROCK_EMBED_MODEL_TYPE", "titan")
+BEDROCK_EMBED_MODEL_TYPE = os.getenv("BEDROCK_EMBED_MODEL_TYPE", "cohere")
 
 
 # ═══════════════════════════════════════════════════════════════════
