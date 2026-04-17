@@ -63,7 +63,7 @@ async def get_cluster(cluster_id: int):
                       ri.cmdb_ci, ri.assignment_group, ri.business_duration,
                       rcm.similarity_to_centroid
                FROM rexus_cluster_mapping rcm
-               JOIN rexus_incidents ri ON ri.id = rcm.incident_id
+               JOIN rexus_incidents_v3 ri ON ri.id = rcm.incident_id
                WHERE rcm.cluster_id = $1
                ORDER BY rcm.similarity_to_centroid DESC
                LIMIT 20""",

@@ -6,6 +6,7 @@ Incident intelligence API powered by pgvector similarity search.
 import logging
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,9 +44,33 @@ async def _ensure_default_admin() -> None:
         )
 
 
+async def _run_migrations() -> None:
+    """Run all SQL migrations in order on startup.
+
+    Each migration uses IF NOT EXISTS / IF EXISTS guards, so re-running
+    is safe. This eliminates the need to manually apply migrations or
+    run CLI scripts before using the UI.
+    """
+    migrations_dir = Path(__file__).resolve().parent.parent / "migrations"
+    if not migrations_dir.is_dir():
+        logger.warning("Migrations directory not found at %s — skipping", migrations_dir)
+        return
+
+    pool = await get_pool()
+    sql_files = sorted(migrations_dir.glob("*.sql"))
+    for sql_file in sql_files:
+        try:
+            sql = sql_file.read_text()
+            await pool.execute(sql)
+            logger.info("Migration applied: %s", sql_file.name)
+        except Exception as exc:
+            logger.warning("Migration %s skipped (may already be applied): %s", sql_file.name, exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await get_pool()
+    await _run_migrations()
     try:
         await _ensure_default_admin()
     except Exception as exc:

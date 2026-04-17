@@ -112,7 +112,7 @@ async def _rank_problems(pool: Any, cluster_id: int, incidents: list[Any]) -> li
                       MAX(ri.opened_at) as latest_date,
                       AVG(rcm.similarity_to_centroid) as avg_sim,
                       MAX(rcm.similarity_to_centroid) as max_sim
-               FROM rexus_incidents ri
+               FROM rexus_incidents_v3 ri
                JOIN rexus_cluster_mapping rcm ON ri.id = rcm.incident_id
                WHERE rcm.cluster_id = $1
                  AND ri.problem_id IS NOT NULL AND ri.problem_id != ''
@@ -265,7 +265,7 @@ async def generate_playbook(cluster_id: int):
                       ri.u_jira_number, ri.u_order_number, ri.opened_at, ri.closed_at,
                       ri.business_duration, ri.close_code, ri.work_notes as full_work_notes,
                       rcm.similarity_to_centroid
-               FROM rexus_incidents ri
+               FROM rexus_incidents_v3 ri
                JOIN rexus_cluster_mapping rcm ON ri.id = rcm.incident_id
                WHERE rcm.cluster_id = $1
                ORDER BY ri.opened_at DESC""",

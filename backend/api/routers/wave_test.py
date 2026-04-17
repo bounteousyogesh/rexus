@@ -35,7 +35,7 @@ async def list_waves():
                    MAX(opened_at)::date as to_date,
                    COUNT(*) FILTER (WHERE problem_id IS NOT NULL AND problem_id != '') as with_problem,
                    COUNT(*) FILTER (WHERE work_notes IS NOT NULL AND length(work_notes) > 50) as with_notes
-            FROM rexus_incidents
+            FROM rexus_incidents_v3
             WHERE split_group LIKE 'wave_%'
             GROUP BY split_group
             ORDER BY MIN(opened_at)
@@ -56,7 +56,7 @@ async def list_wave_incidents(
 
     async with pool.acquire() as conn:
         total = await conn.fetchval(
-            "SELECT COUNT(*) FROM rexus_incidents WHERE split_group = $1", wave
+            "SELECT COUNT(*) FROM rexus_incidents_v3 WHERE split_group = $1", wave
         )
         rows = await conn.fetch(
             """SELECT incident_number, short_description, category, subcategory,
@@ -65,7 +65,7 @@ async def list_wave_incidents(
                       CASE WHEN problem_id IS NOT NULL AND problem_id != '' THEN true ELSE false END as has_problem,
                       CASE WHEN close_notes IS NOT NULL AND length(close_notes) > 10 THEN true ELSE false END as has_resolution,
                       CASE WHEN u_jira_number IS NOT NULL AND u_jira_number != '' THEN true ELSE false END as has_jira
-               FROM rexus_incidents
+               FROM rexus_incidents_v3
                WHERE split_group = $1
                ORDER BY opened_at
                LIMIT $2 OFFSET $3""",
@@ -103,7 +103,7 @@ async def get_test_incident(wave: str, incident_number: str):
                       problem_id, u_jira_number, u_order_number,
                       u_correction_type, u_error_category,
                       u_resolved_by, business_duration, reassignment_count
-               FROM rexus_incidents
+               FROM rexus_incidents_v3
                WHERE incident_number = $1 AND split_group = $2""",
             incident_number, wave,
         )

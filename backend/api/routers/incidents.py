@@ -46,13 +46,13 @@ async def list_incidents(
 
     async with pool.acquire() as conn:
         total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM rexus_incidents {where}", *params
+            f"SELECT COUNT(*) FROM rexus_incidents_v3 {where}", *params
         )
         rows = await conn.fetch(
             f"""SELECT id, incident_number, short_description, category, subcategory,
                        priority, state, cmdb_ci, assignment_group, close_notes,
                        opened_at, resolved_at, business_duration
-                FROM rexus_incidents {where}
+                FROM rexus_incidents_v3 {where}
                 ORDER BY opened_at DESC NULLS LAST
                 LIMIT ${idx} OFFSET ${idx + 1}""",
             *params, page_size, offset,
@@ -83,7 +83,7 @@ async def get_incident(incident_number: str):
                       close_notes, opened_at, resolved_at, closed_at,
                       business_duration, u_jira_number, u_order_number,
                       caller_id, location, company
-               FROM rexus_incidents WHERE incident_number = $1""",
+               FROM rexus_incidents_v3 WHERE incident_number = $1""",
             incident_number,
         )
         if not row:

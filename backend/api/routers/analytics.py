@@ -19,13 +19,13 @@ async def get_analytics():
                 COUNT(*) FILTER (WHERE embedding IS NOT NULL)    AS embedded_count,
                 (SELECT COUNT(*) FROM rexus_clusters)            AS cluster_count,
                 (SELECT COUNT(*) FROM rexus_playbooks)           AS playbook_count
-               FROM rexus_incidents"""
+               FROM rexus_incidents_v3"""
         )
 
         # Category breakdown
         categories = await conn.fetch(
             """SELECT category, COUNT(*) as count
-               FROM rexus_incidents
+               FROM rexus_incidents_v3
                WHERE category IS NOT NULL
                GROUP BY category ORDER BY count DESC"""
         )
@@ -33,7 +33,7 @@ async def get_analytics():
         # Top CMDB CIs
         top_cmdb = await conn.fetch(
             """SELECT cmdb_ci, COUNT(*) as count
-               FROM rexus_incidents
+               FROM rexus_incidents_v3
                WHERE cmdb_ci IS NOT NULL
                GROUP BY cmdb_ci ORDER BY count DESC LIMIT 15"""
         )
@@ -41,7 +41,7 @@ async def get_analytics():
         # Top assignment groups
         top_groups = await conn.fetch(
             """SELECT assignment_group, COUNT(*) as count
-               FROM rexus_incidents
+               FROM rexus_incidents_v3
                WHERE assignment_group IS NOT NULL
                GROUP BY assignment_group ORDER BY count DESC LIMIT 15"""
         )
@@ -52,7 +52,7 @@ async def get_analytics():
                       ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY business_stc / 3600.0)::numeric, 1) as median_hours,
                       ROUND(MIN(business_stc / 3600.0)::numeric, 1) as min_hours,
                       ROUND(MAX(business_stc / 3600.0)::numeric, 1) as max_hours
-               FROM rexus_incidents
+               FROM rexus_incidents_v3
                WHERE business_stc IS NOT NULL AND business_stc > 0"""
         )
 
@@ -66,7 +66,7 @@ async def get_analytics():
         # Incidents over time (monthly)
         monthly_trend = await conn.fetch(
             """SELECT DATE_TRUNC('month', opened_at) as month, COUNT(*) as count
-               FROM rexus_incidents
+               FROM rexus_incidents_v3
                WHERE opened_at IS NOT NULL
                GROUP BY month ORDER BY month"""
         )
@@ -74,7 +74,7 @@ async def get_analytics():
         # State breakdown
         states = await conn.fetch(
             """SELECT state, COUNT(*) as count
-               FROM rexus_incidents
+               FROM rexus_incidents_v3
                WHERE state IS NOT NULL
                GROUP BY state ORDER BY count DESC"""
         )
