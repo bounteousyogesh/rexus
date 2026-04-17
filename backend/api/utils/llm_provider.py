@@ -53,6 +53,11 @@ BEDROCK_ROLE_ARN = os.getenv(
 # Use "cohere" for cohere.embed-* models     (body: {"texts": [...], "input_type": "..."})
 BEDROCK_EMBED_MODEL_TYPE = os.getenv("BEDROCK_EMBED_MODEL_TYPE", "cohere")
 
+# Expected embedding output dimensions — must match the vector column size in the DB.
+# Cohere Embed v3 = 1024, Cohere Embed v4 = 1536, OpenAI text-embedding-3-small = 1536.
+# Used only for logging/validation; pgvector accepts dimensionless vectors in queries.
+BEDROCK_EMBED_DIMENSIONS = int(os.getenv("BEDROCK_EMBED_DIMENSIONS", "1024"))
+
 # Chat request body format: "anthropic" (default) | "other"
 # When using application inference profile ARNs (which contain no model family hint),
 # set this to "anthropic" for Claude models (system prompt extracted to top-level param).

@@ -13,6 +13,8 @@ async def vector_search(
     threshold: float = Query(0.40, ge=0.0, le=1.0),
 ):
     embedding = await embed_text(q)
+    # Build the vector literal and cast explicitly — no hardcoded dimension
+    # so it works with any embed model (Cohere 1024-dim, OpenAI 1536-dim, etc.)
     embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
 
     pool = await get_pool()
