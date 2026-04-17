@@ -22,7 +22,7 @@ async def vector_search(
         rows = await conn.fetch(
             """SELECT incident_id, incident_number, short_description,
                       close_notes, similarity_score, cluster_id
-               FROM rexus_find_similar($1::vector, $2, $3, TRUE)""",
+               FROM rexus_find_similar($1::vector, $2, $3, FALSE)""",
             embedding_str, threshold, limit,
         )
 
