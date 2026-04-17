@@ -53,6 +53,11 @@ BEDROCK_ROLE_ARN = os.getenv(
 # Use "cohere" for cohere.embed-* models     (body: {"texts": [...], "input_type": "..."})
 BEDROCK_EMBED_MODEL_TYPE = os.getenv("BEDROCK_EMBED_MODEL_TYPE", "cohere")
 
+# Chat request body format: "anthropic" (default) | "other"
+# When using application inference profile ARNs (which contain no model family hint),
+# set this to "anthropic" for Claude models (system prompt extracted to top-level param).
+BEDROCK_CHAT_MODEL_TYPE = os.getenv("BEDROCK_CHAT_MODEL_TYPE", "anthropic")
+
 
 # ═══════════════════════════════════════════════════════════════════
 # Bedrock Provider (boto3) — for AWS production
@@ -124,7 +129,8 @@ async def _bedrock_chat(model, messages, max_tokens=1500, temperature=0.1):
         else:
             chat_messages.append({"role": msg["role"], "content": msg["content"]})
 
-    if "anthropic" in model.lower():
+    is_anthropic = "anthropic" in model.lower() or BEDROCK_CHAT_MODEL_TYPE == "anthropic"
+    if is_anthropic:
         body = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": max_tokens,
@@ -150,7 +156,7 @@ async def _bedrock_chat(model, messages, max_tokens=1500, temperature=0.1):
 
     result = json.loads(response["body"].read())
 
-    if "anthropic" in model.lower():
+    if is_anthropic:
         content = result.get("content", [{}])
         text = content[0].get("text", "") if content else ""
         input_tokens = result.get("usage", {}).get("input_tokens", 0)
