@@ -584,7 +584,7 @@ async def analyze_ticket(request: Request, req: AnalyzeRequest):
                       NULL::int as cluster_id
                FROM rexus_incidents_v3
                WHERE embedding IS NOT NULL
-                 AND (split_group = 'training' OR split_group = 'analyzed')
+                 AND split_group IN ('training',  'analyzed', 'synced')
                  AND 1 - (embedding <=> $1::vector) >= $2
                ORDER BY embedding <=> $1::vector
                LIMIT $3""",
@@ -599,13 +599,17 @@ async def analyze_ticket(request: Request, req: AnalyzeRequest):
                           similarity(short_description, $1)::float AS similarity_score,
                           NULL::int as cluster_id
                    FROM rexus_incidents_v3
-                   WHERE (split_group = 'training' OR split_group = 'analyzed')
+                   WHERE split_group IN ('training',  'analyzed', 'synced')
                      AND short_description % $1
                    ORDER BY similarity(short_description, $1) DESC
                    LIMIT $2""",
                 raw_query, req.limit,
             )
 
+        logger.info(
+            "Analyze %s: vector=%d keyword=%d threshold=%.2f",
+            incident_number, len(vector_results), len(keyword_results), req.threshold,
+        )    
         # Merge: MAX(vector, keyword) + agreement bonus
         merged: dict[int, dict] = {}
         for r in vector_results:
