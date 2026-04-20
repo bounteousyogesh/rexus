@@ -28,6 +28,19 @@ export SERVICENOW_CLIENT_SECRET=$(echo "$SECRET_JSON" | jq -r .SERVICENOW_CLIENT
 
 echo "Secrets loaded successfully."
 
+# --- Run SQL migrations ---
+echo "Running SQL migrations..."
+MIGRATIONS_DIR="$(dirname "$0")/migrations"
+if [ -d "$MIGRATIONS_DIR" ]; then
+    for sql_file in $(ls "$MIGRATIONS_DIR"/*.sql | sort); do
+        echo "  Applying: $(basename $sql_file)"
+        psql "$DATABASE_URL" -f "$sql_file" -v ON_ERROR_STOP=0 2>&1 | grep -v "^$" || true
+    done
+    echo "Migrations complete."
+else
+    echo "WARNING: Migrations directory not found at $MIGRATIONS_DIR"
+fi
+
 # --- Start backend ---
 echo "Starting backend..."
 # Run in foreground so Docker tracks the process (no & — container would exit immediately otherwise)

@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Search, BarChart3, Layers, Activity, Zap, RefreshCw, Shield, LogOut, KeyRound } from 'lucide-react';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { authApi, type SSOConfig } from './api';
 import LoginPage from './pages/Login';
 import AuthCallback from './pages/AuthCallback';
 import DashboardPage from './pages/Dashboard';
@@ -111,15 +112,88 @@ export default function App() {
   );
 }
 
+// ── PKCE Helpers ─────────────────────────────────────────────────────────────
+
+function generateCodeVerifier(): string {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  return btoa(String.fromCharCode(...array))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+}
+
+async function generateCodeChallenge(verifier: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(verifier);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return btoa(String.fromCharCode(...new Uint8Array(digest)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+}
+
+async function redirectToSSO(ssoConfig: SSOConfig) {
+  const codeVerifier = generateCodeVerifier();
+  const codeChallenge = await generateCodeChallenge(codeVerifier);
+  const state = crypto.randomUUID();
+
+  sessionStorage.setItem('sso_code_verifier', codeVerifier);
+  sessionStorage.setItem('sso_state', state);
+
+  const params = new URLSearchParams({
+    client_id: ssoConfig.client_id!,
+    response_type: 'code',
+    scope: 'openid email profile',
+    redirect_uri: ssoConfig.redirect_uri!,
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256',
+    state,
+  });
+
+  if (ssoConfig.audience) {
+    params.set('audience', ssoConfig.audience);
+  }
+
+  window.location.href = `${ssoConfig.authorize_url}?${params.toString()}`;
+}
+
+// ── AppGate ───────────────────────────────────────────────────────────────────
+
 function AppGate() {
   const { isAuthenticated, isLoading } = useAuth();
+  const [ssoChecked, setSsoChecked] = useState(false);
 
-  // Handle SSO callback route before anything else
-  if (window.location.pathname === '/auth/callback') {
+  const isCallback = window.location.pathname === '/auth/callback';
+  // If there's an SSO error in the URL, fall through to LoginPage so it's shown
+  const hasSsoError = new URLSearchParams(window.location.search).has('sso_error');
+
+  // Once auth loading is done and user is NOT authenticated, check SSO config.
+  // If SSO is enabled (and no error to show), redirect straight to Okta.
+  // Hooks must always be called — no early returns before this.
+  useEffect(() => {
+    if (isCallback || isLoading || isAuthenticated || hasSsoError) {
+      setSsoChecked(true);
+      return;
+    }
+
+    authApi.ssoConfig().then((config) => {
+      if (config && config.enabled) {
+        redirectToSSO(config); // navigates away — component will unmount
+      } else {
+        setSsoChecked(true); // SSO not configured → show login page
+      }
+    }).catch(() => {
+      setSsoChecked(true); // on error fall back to login page
+    });
+  }, [isCallback, isLoading, isAuthenticated, hasSsoError]);
+
+  // Handle SSO callback route — safe to return after all hooks
+  if (isCallback) {
     return <AuthCallback />;
   }
 
-  if (isLoading) {
+  if (isLoading || (!isAuthenticated && !hasSsoError && !ssoChecked)) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-100">
         <div className="text-slate-500 text-sm">Loading...</div>
