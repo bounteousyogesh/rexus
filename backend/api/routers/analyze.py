@@ -609,7 +609,8 @@ async def analyze_ticket(request: Request, req: AnalyzeRequest):
         logger.info(
             "Analyze %s: vector=%d keyword=%d threshold=%.2f",
             incident_number, len(vector_results), len(keyword_results), req.threshold,
-        )    
+        )
+
         # Merge: MAX(vector, keyword) + agreement bonus
         merged: dict[int, dict] = {}
         for r in vector_results:
@@ -621,11 +622,11 @@ async def analyze_ticket(request: Request, req: AnalyzeRequest):
             else:
                 merged[iid] = {**dict(r), "vec": 0.0, "kw": r["similarity_score"]}
 
-        # Calculate hybrid score
+        # Calculate hybrid score — capped at 1.0 so it never exceeds 100%
         for iid, m in merged.items():
             base = max(m["vec"], m["kw"])
             bonus = min(m["vec"], m["kw"]) * _HYBRID_BONUS_MULTIPLIER if m["vec"] > _HYBRID_VEC_MIN and m["kw"] > _HYBRID_KW_MIN else 0
-            m["similarity_score"] = base + bonus
+            m["similarity_score"] = min(base + bonus, 1.0)
 
         # Sort by hybrid score and take top N
         similar = sorted(merged.values(), key=lambda x: -x["similarity_score"])[:req.limit]

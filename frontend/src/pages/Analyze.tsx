@@ -225,13 +225,12 @@ export default function AnalyzePage() {
           {/* Row 1: Confidence + Cluster + Problem Tag */}
           <div className="grid grid-cols-[auto_1fr_auto] gap-3 items-stretch">
             {/* Confidence */}
-            <div className="bg-white rounded-lg p-3 shadow-sm border border-slate-100 flex items-center gap-3">
-              <p className={`text-2xl font-bold ${confidenceColor(result.confidence_score)}`}>
-                {(result.confidence_score * 100).toFixed(0)}%
+            <div className="bg-white rounded-lg p-3 shadow-sm border border-slate-100 flex items-center gap-3">              <p className={`text-2xl font-bold ${confidenceColor(result.confidence_score)}`}>
+                {(Math.min(result.confidence_score, 1) * 100).toFixed(0)}%
               </p>
               <div>
                 <div className="w-24 h-2 bg-slate-100 rounded-full overflow-hidden">
-                  <div className={`h-2 rounded-full ${confidenceBg(result.confidence_score)}`} style={{ width: `${result.confidence_score * 100}%` }} />
+                  <div className={`h-2 rounded-full ${confidenceBg(result.confidence_score)}`} style={{ width: `${Math.min(result.confidence_score, 1) * 100}%` }} />
                 </div>
                 <p className="text-[10px] text-slate-500 mt-0.5">{result.match_count} matches</p>
               </div>
@@ -307,9 +306,8 @@ export default function AnalyzePage() {
                       onClick={() => setExpandedInc(expandedInc === inc.incident_number ? null : inc.incident_number)}>
                       <td className="px-2 py-1 font-mono text-blue-600">{inc.incident_number}</td>
                       <td className="px-2 py-1 text-slate-700 truncate max-w-xs">{inc.short_description}</td>
-                      <td className="px-2 py-1 text-slate-500">{inc.cmdb_ci}</td>
-                      <td className={`px-2 py-1 text-right font-semibold ${confidenceColor(inc.similarity_score || 0)}`}>
-                        {((inc.similarity_score || 0) * 100).toFixed(0)}%
+                      <td className="px-2 py-1 text-slate-500">{inc.cmdb_ci}</td>                      <td className={`px-2 py-1 text-right font-semibold ${confidenceColor(inc.similarity_score || 0)}`}>
+                        {(Math.min(inc.similarity_score || 0, 1) * 100).toFixed(0)}%
                       </td>
                     </tr>
                   ))}
