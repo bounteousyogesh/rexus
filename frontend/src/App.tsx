@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Search, BarChart3, Layers, Activity, Zap, RefreshCw, Shield, LogOut, KeyRound } from 'lucide-react';
-import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { AuthProvider, useAuth, LOGGED_OUT_KEY } from './contexts/AuthContext';
 import { authApi, type SSOConfig } from './api';
 import LoginPage from './pages/Login';
 import AuthCallback from './pages/AuthCallback';
@@ -165,14 +165,12 @@ function AppGate() {
   const [ssoChecked, setSsoChecked] = useState(false);
 
   const isCallback = window.location.pathname === '/auth/callback';
-  // If there's an SSO error in the URL, fall through to LoginPage so it's shown
   const hasSsoError = new URLSearchParams(window.location.search).has('sso_error');
+  // After an explicit logout, show the login page instead of auto-redirecting
+  const didLogOut = sessionStorage.getItem(LOGGED_OUT_KEY) === '1';
 
-  // Once auth loading is done and user is NOT authenticated, check SSO config.
-  // If SSO is enabled (and no error to show), redirect straight to Okta.
-  // Hooks must always be called — no early returns before this.
   useEffect(() => {
-    if (isCallback || isLoading || isAuthenticated || hasSsoError) {
+    if (isCallback || isLoading || isAuthenticated || hasSsoError || didLogOut) {
       setSsoChecked(true);
       return;
     }
@@ -181,12 +179,12 @@ function AppGate() {
       if (config && config.enabled) {
         redirectToSSO(config); // navigates away — component will unmount
       } else {
-        setSsoChecked(true); // SSO not configured → show login page
+        setSsoChecked(true);
       }
     }).catch(() => {
-      setSsoChecked(true); // on error fall back to login page
+      setSsoChecked(true);
     });
-  }, [isCallback, isLoading, isAuthenticated, hasSsoError]);
+  }, [isCallback, isLoading, isAuthenticated, hasSsoError, didLogOut]);
 
   // Handle SSO callback route — safe to return after all hooks
   if (isCallback) {

@@ -20,6 +20,9 @@ interface AuthState {
 const AuthContext = createContext<AuthState | null>(null);
 
 const TOKEN_KEY = 'rexus_token';
+// Set after an explicit logout so AppGate shows the login page instead of
+// auto-redirecting to SSO again.
+export const LOGGED_OUT_KEY = 'rexus_logged_out';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -30,6 +33,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     localStorage.removeItem(TOKEN_KEY);
+    sessionStorage.setItem(LOGGED_OUT_KEY, '1'); // signal: user just logged out
     setToken(null);
     setUser(null);
   }, []);
