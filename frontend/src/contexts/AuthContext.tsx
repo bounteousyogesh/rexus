@@ -14,6 +14,7 @@ interface AuthState {
   isAuthenticated: boolean;
   isLoading: boolean;
   login: (username: string, password: string) => Promise<void>;
+  loginWithToken: (data: LoginResponse) => void;
   logout: () => void;
 }
 
@@ -30,10 +31,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => localStorage.getItem(TOKEN_KEY),
   );
   const [isLoading, setIsLoading] = useState(true);
+  // Internal: clears auth state when a stored token is found to be invalid on
+  // page load. Does NOT set LOGGED_OUT_KEY so AppGate still auto-redirects to SSO.
+  const clearSession = useCallback(() => {
+    localStorage.removeItem(TOKEN_KEY);
+    setToken(null);
+    setUser(null);
+  }, []);
 
+  // Explicit user sign-out: sets LOGGED_OUT_KEY so AppGate shows the login page
+  // with the SSO button instead of silently auto-redirecting to Okta again.
   const logout = useCallback(() => {
     localStorage.removeItem(TOKEN_KEY);
-    sessionStorage.setItem(LOGGED_OUT_KEY, '1'); // signal: user just logged out
+    sessionStorage.setItem(LOGGED_OUT_KEY, '1');
     setToken(null);
     setUser(null);
   }, []);
@@ -55,12 +65,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Only call me() on initial mount with a stored token (page refresh)
     let cancelled = false;
     authApi
-      .me()
-      .then((u) => {
+      .me()      .then((u) => {
         if (!cancelled) setUser(u);
       })
       .catch(() => {
-        if (!cancelled) logout();
+        // Token is expired/invalid — clear it silently so AppGate can
+        // auto-redirect to SSO (do NOT set LOGGED_OUT_KEY here).
+        if (!cancelled) clearSession();
       })
       .finally(() => {
         if (!cancelled) setIsLoading(false);
@@ -69,10 +80,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [token, logout]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [token, clearSession]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const login = useCallback(async (username: string, password: string) => {
     const data: LoginResponse = await authApi.login(username, password);
+    localStorage.setItem(TOKEN_KEY, data.token);
+    setToken(data.token);
+    setUser({
+      id: data.user.id,
+      username: data.user.username,
+      role: data.user.role,
+    });
+  }, []);
+
+  // Used by AuthCallback after SSO — sets token + user directly, no /me round-trip
+  const loginWithToken = useCallback((data: LoginResponse) => {
     localStorage.setItem(TOKEN_KEY, data.token);
     setToken(data.token);
     setUser({
@@ -90,6 +112,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAuthenticated: !!user,
         isLoading,
         login,
+        loginWithToken,
         logout,
       }}
     >
