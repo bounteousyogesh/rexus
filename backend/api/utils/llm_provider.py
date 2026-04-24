@@ -35,17 +35,17 @@ AWS_REGION     = os.getenv("AWS_REGION",     "us-west-2")
 # Bedrock inference profile ARNs  (used as modelId instead of plain model strings)
 BEDROCK_CHAT_MODEL_ID  = os.getenv(
     "BEDROCK_CHAT_MODEL_ID",
-    "arn:aws:bedrock:us-west-2:288761730964:application-inference-profile/yptc9mo9d8it",
+    "arn:aws:bedrock:us-west-2:288761730964:application-inference-profile/2jjbzso7jmr7",
 )
 BEDROCK_EMBED_MODEL_ID = os.getenv(
     "BEDROCK_EMBED_MODEL_ID",
-    "arn:aws:bedrock:us-west-2:288761730964:application-inference-profile/o1pfx36i19zl",
+    "arn:aws:bedrock:us-west-2:288761730964:application-inference-profile/rax65scdbqk0",
 )
 
 # IAM role to assume before calling Bedrock (leave blank to use the task's own role)
 BEDROCK_ROLE_ARN = os.getenv(
     "BEDROCK_ROLE_ARN",
-    "arn:aws:iam::288761730964:role/dt-rexus-stg",
+    "arn:aws:iam::288761730964:role/dt-rexus-prd",
 )
 
 # Embed request body format: "titan" | "cohere" (default)
