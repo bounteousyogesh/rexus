@@ -65,7 +65,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Only call me() on initial mount with a stored token (page refresh)
     let cancelled = false;
     authApi
-      .me()      .then((u) => {
+      .me()      
+      .then((u) => {
         if (!cancelled) setUser(u);
       })
       .catch(() => {

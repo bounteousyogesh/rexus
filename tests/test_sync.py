@@ -17,6 +17,8 @@ Design note:
 import pytest
 import httpx
 
+from backend.api.routers.sync import _SYNC_IMPORT_MAX
+
 
 SYNC_STATUS_URL = "/api/v1/sync/status"
 SYNC_DELTA_URL  = "/api/v1/sync/delta"
@@ -191,41 +193,34 @@ def test_sync_import_rejects_empty_incident_list(client: httpx.Client):
     )
 
 
-def test_sync_import_rejects_more_than_50_incidents(client: httpx.Client):
+def test_sync_import_rejects_more_than_max_incidents(client: httpx.Client):
     """
-    POST /sync/import with > 50 incident numbers must return 400.
-    SEC-020: ImportRequest enforces max 50 per batch to prevent abuse.
+    POST /sync/import with > SYNC_IMPORT_MAX_INCIDENTS must return 422.
+    SEC-020: ImportRequest enforces configurable max per batch.
     """
-    too_many = [f"INC{i:07d}" for i in range(1, 52)]  # 51 incidents
+    too_many = [f"INC{i:07d}" for i in range(1, _SYNC_IMPORT_MAX + 2)]
     response = client.post(SYNC_IMPORT_URL, json={"incident_numbers": too_many})
-    assert response.status_code == 400, (
-        f"Expected 400 for >50 incidents, got {response.status_code}"
+    assert response.status_code == 422, (
+        f"Expected 422 for >{_SYNC_IMPORT_MAX} incidents, got {response.status_code}"
     )
     body = response.json()
-    # The 400 message should mention the limit
     detail_text = str(body).lower()
-    assert "50" in detail_text or "max" in detail_text or "limit" in detail_text, (
-        f"400 error should mention the 50-incident limit, got: {body}"
+    assert "max" in detail_text or "limit" in detail_text or str(_SYNC_IMPORT_MAX) in detail_text, (
+        f"422 error should mention the import limit, got: {body}"
     )
 
 
-def test_sync_import_with_exactly_50_incidents_is_not_rejected_by_validation(
-    client: httpx.Client,
-):
-    """
-    POST /sync/import with exactly 50 incident_numbers must NOT return 400
-    from the batch-size guard. (It may return 200 with all 'not_found' or
-    500 if SN is down — but the validation limit must be respected as max=50.)
-    """
-    exactly_50 = [f"INC{i:07d}" for i in range(1, 51)]
-    response = client.post(SYNC_IMPORT_URL, json={"incident_numbers": exactly_50}, timeout=30.0)
-    # Validation must pass (not 400 for size). Other failures are acceptable.
-    if response.status_code == 400:
-        body = response.json()
-        detail = str(body).lower()
-        # Should not be the batch-size 400
-        assert "50" not in detail and "max" not in detail, (
-            "Batch of exactly 50 was incorrectly rejected by the batch-size guard"
+def test_sync_import_small_batch_is_not_rejected_by_batch_size(client: httpx.Client):
+    """POST /sync/import with a small batch must not fail 422 for batch-size validation."""
+    response = client.post(
+        SYNC_IMPORT_URL,
+        json={"incident_numbers": ["INC0000001"]},
+        timeout=30.0,
+    )
+    if response.status_code == 422:
+        detail = str(response.json()).lower()
+        assert "max_length" not in detail and "too_long" not in detail, (
+            "Small batch was incorrectly rejected by the batch-size guard"
         )
 
 

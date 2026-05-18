@@ -3,6 +3,8 @@ import { Search, BarChart3, Layers, Activity, Zap, RefreshCw, Shield, LogOut, Ke
 import { AuthProvider, useAuth, LOGGED_OUT_KEY } from './contexts/AuthContext';
 import { authApi, type SSOConfig } from './api';
 import LoginPage from './pages/Login';
+import LoginDevPage from './pages/Login_Dev';
+import { isLocalDevelopment } from './env';
 import AuthCallback from './pages/AuthCallback';
 import DashboardPage from './pages/Dashboard';
 import AnalyzePage from './pages/Analyze';
@@ -200,7 +202,7 @@ function AppGate() {
   }
 
   if (!isAuthenticated) {
-    return <LoginPage />;
+    return isLocalDevelopment ? <LoginDevPage /> : <LoginPage />;
   }
 
   return <AuthenticatedApp />;

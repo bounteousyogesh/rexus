@@ -73,6 +73,15 @@ export interface Incident {
   cluster?: { id: number; cluster_name: string; similarity_to_centroid: number };
 }
 
+export interface KbArticle {
+  sys_id: string;
+  number: string;
+  short_description: string;
+  kb_category_display?: string;
+  attached_on?: string;
+  url?: string;
+}
+
 export interface Cluster {
   id: number;
   cluster_name: string;
@@ -132,6 +141,7 @@ export interface AnalyzeResult {
     other_problems: string[];
     order_ids: string[];
     jira_tickets: string[];
+    kb_articles?: KbArticle[];
   };
   resolution_patterns: {
     incident_number: string;

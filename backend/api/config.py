@@ -21,8 +21,13 @@ if LLM_PROVIDER == "openai" and not OPENAI_API_KEY:
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")  # Optional; required when Claude integration is enabled
 
-# SSO / Okta OIDC configuration
-SSO_ENABLED = os.getenv("SSO_ENABLED", "false").lower() == "true"
+# Environment: development (local), test, staging, production
+REXUS_ENV = os.getenv("REXUS_ENV", "development").lower()
+
+# SSO / Okta OIDC — only in deployed environments (test/staging/production), never local dev
+_SSO_DEPLOYED_ENVS = frozenset({"test", "staging", "production"})
+_SSO_REQUESTED = os.getenv("SSO_ENABLED", "true").lower() == "true"
+SSO_ENABLED = REXUS_ENV in _SSO_DEPLOYED_ENVS and _SSO_REQUESTED
 SSO_CLIENT_ID = os.getenv("SSO_CLIENT_ID", "")
 SSO_ISSUER_URL = os.getenv("SSO_ISSUER_URL", "")
 SSO_AUDIENCE = os.getenv("SSO_AUDIENCE", "")

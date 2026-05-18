@@ -29,6 +29,13 @@ interface SyncStatus {
   servicenow: {
     closed_incidents: number | string;
   };
+  catalog?: {
+    path: string;
+    available: boolean;
+    date_min: string | null;
+    date_max: string | null;
+  };
+  import_max_incidents?: number;
 }
 
 interface SyncDelta {
@@ -36,6 +43,9 @@ interface SyncDelta {
   total_discovered: number;
   already_in_db: number;
   source: string;
+  message?: string | null;
+  catalog_date_min?: string | null;
+  catalog_date_max?: string | null;
   by_month: DeltaGroup[];
   by_week: DeltaGroup[];
   by_day: DeltaGroup[];
@@ -53,7 +63,8 @@ export default function SyncPage() {
   const [statusError, setStatusError] = useState<string | null>(null);
   const [delta, setDelta] = useState<SyncDelta | null>(null);
   const [loading, setLoading] = useState(false);
-  const [importing, setImporting] = useState<string | null>(null);
+  /** Group label (e.g. "2025-03") or "__all__" while that import is in flight */
+  const [importingKey, setImportingKey] = useState<string | null>(null);
   const [importResults, setImportResults] = useState<ImportResult[]>([]);
   const [groupBy, setGroupBy] = useState<'day' | 'week' | 'month'>('month');
   const [startDate, setStartDate] = useState(() => {
@@ -77,8 +88,8 @@ export default function SyncPage() {
     }
   }, []);
 
-  const checkDelta = async () => {
-    setLoading(true);
+  const checkDelta = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     setDeltaError(null);
     try {
       const params = new URLSearchParams();
@@ -93,14 +104,18 @@ export default function SyncPage() {
     } catch (err) {
       setDeltaError(err instanceof Error ? err.message : 'Failed to check delta');
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
-  };
+  }, [startDate, endDate, closedOnly, filterCategory, filterCmdb]);
 
-  // ENH-013: importGroup wrapped in useCallback to avoid re-creation on every render
-  const importGroup = useCallback(async (incidents: SyncIncident[]) => {
+  const refreshAfterImport = useCallback(() => {
+    void checkStatus();
+    void checkDelta({ silent: true });
+  }, [checkStatus, checkDelta]);
+
+  const runImport = useCallback(async (incidents: SyncIncident[], key: string) => {
     const numbers = incidents.map(i => i.incident_number);
-    setImporting(numbers[0]);
+    setImportingKey(key);
     try {
       const res = await fetch(`${BASE}/sync/import`, {
         method: 'POST',
@@ -110,18 +125,18 @@ export default function SyncPage() {
       if (!res.ok) throw new Error(`Import failed: ${res.status}`);
       const data = await res.json();
       setImportResults(prev => [...prev, ...(data.results as ImportResult[])]);
-      // Refresh delta
-      await checkDelta();
     } catch (err) {
       setDeltaError(err instanceof Error ? err.message : 'Import failed');
     } finally {
-      setImporting(null);
+      setImportingKey(null);
     }
-  }, []);
+    refreshAfterImport();
+  }, [refreshAfterImport]);
 
   useEffect(() => { checkStatus(); }, [checkStatus]);
 
   const groups: DeltaGroup[] = delta ? (groupBy === 'month' ? delta.by_month : groupBy === 'week' ? delta.by_week : delta.by_day) : [];
+  const importBatchSize = status?.import_max_incidents ?? 1000;
 
   return (
     <div className="p-6 space-y-4 max-w-[1000px]">
@@ -153,6 +168,11 @@ export default function SyncPage() {
                 {status.database.embedded?.toLocaleString()} embedded |
                 Latest: {status.database.latest_incident_date?.slice(0, 10) || '—'}
               </p>
+              {status.database.total_incidents === 0 && (
+                <p className="text-xs text-amber-700 mt-1">
+                  Knowledge base is empty — search below and import incidents to populate it.
+                </p>
+              )}
             </div>
           ) : (
             <p className="text-sm text-slate-400">Loading...</p>
@@ -243,10 +263,34 @@ export default function SyncPage() {
       {delta && (
         <div className="space-y-3">
           {delta.total_delta === 0 ? (
-            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-6 text-center">
-              <CheckCircle2 size={28} className="mx-auto text-emerald-500 mb-2" />
-              <p className="text-sm font-medium text-emerald-800">Database is up to date</p>
-              <p className="text-xs text-emerald-600">No new closed incidents found in ServiceNow</p>
+            <div className={`rounded-xl p-6 text-center border ${
+              delta.total_discovered === 0
+                ? 'bg-amber-50 border-amber-200'
+                : 'bg-emerald-50 border-emerald-200'
+            }`}>
+              {delta.total_discovered === 0 ? (
+                <>
+                  <AlertCircle size={28} className="mx-auto text-amber-500 mb-2" />
+                  <p className="text-sm font-medium text-amber-800">No incidents found for this date range</p>
+                  <p className="text-xs text-amber-700 mt-1">
+                    {delta.message || 'Try a different date range or check ServiceNow connectivity.'}
+                  </p>
+                  {delta.catalog_date_min && delta.catalog_date_max && (
+                    <p className="text-xs text-amber-600 mt-2">
+                      Catalog covers {delta.catalog_date_min} → {delta.catalog_date_max}
+                      (e.g. Mar–Apr 2025 has data; May–Jul 2025 is sparse in the export).
+                    </p>
+                  )}
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 size={28} className="mx-auto text-emerald-500 mb-2" />
+                  <p className="text-sm font-medium text-emerald-800">All discovered incidents are already imported</p>
+                  <p className="text-xs text-emerald-600">
+                    {delta.already_in_db} of {delta.total_discovered} in this search are in the database.
+                  </p>
+                </>
+              )}
             </div>
           ) : (
             <>
@@ -257,26 +301,53 @@ export default function SyncPage() {
                 <button
                   onClick={async () => {
                     const allIncs = groups.flatMap((g: DeltaGroup) => g.incidents);
-                    if (allIncs.length > 50) {
-                      // Import in batches of 50
-                      for (let i = 0; i < allIncs.length; i += 50) {
-                        const batch = allIncs.slice(i, i + 50);
-                        await importGroup(batch);
+                    setImportingKey('__all__');
+                    try {
+                      if (allIncs.length > importBatchSize) {
+                        for (let i = 0; i < allIncs.length; i += importBatchSize) {
+                          const batch = allIncs.slice(i, i + importBatchSize);
+                          const numbers = batch.map(inc => inc.incident_number);
+                          const res = await fetch(`${BASE}/sync/import`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ incident_numbers: numbers }),
+                          });
+                          if (!res.ok) throw new Error(`Import failed: ${res.status}`);
+                          const data = await res.json();
+                          setImportResults(prev => [...prev, ...(data.results as ImportResult[])]);
+                        }
+                      } else {
+                        const numbers = allIncs.map(inc => inc.incident_number);
+                        const res = await fetch(`${BASE}/sync/import`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ incident_numbers: numbers }),
+                        });
+                        if (!res.ok) throw new Error(`Import failed: ${res.status}`);
+                        const data = await res.json();
+                        setImportResults(prev => [...prev, ...(data.results as ImportResult[])]);
                       }
-                    } else {
-                      await importGroup(allIncs);
+                    } catch (err) {
+                      setDeltaError(err instanceof Error ? err.message : 'Import failed');
+                    } finally {
+                      setImportingKey(null);
                     }
+                    refreshAfterImport();
                   }}
-                  disabled={importing !== null || delta.total_delta === 0}
+                  disabled={importingKey !== null || delta.total_delta === 0}
                   className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
                 >
-                  <Download size={14} />
-                  Import All ({delta.total_delta})
+                  {importingKey === '__all__' ? (
+                    <><Loader2 size={14} className="animate-spin" /> Importing...</>
+                  ) : (
+                    <><Download size={14} /> Import All ({delta.total_delta})</>
+                  )}
                 </button>
               </div>
 
               {groups.map((group: DeltaGroup) => {
-                const label = group.day || group.week || group.month;
+                const label = group.day || group.week || group.month || '';
+                const isImportingThisGroup = importingKey === label;
                 const imported = group.incidents.filter((i: SyncIncident) =>
                   importResults.some(r => r.incident === i.incident_number && r.status === 'imported')
                 );
@@ -290,8 +361,8 @@ export default function SyncPage() {
                         <span className="text-xs text-slate-500 ml-2">{group.count} incidents</span>
                       </div>
                       <button
-                        onClick={() => importGroup(group.incidents)}
-                        disabled={importing !== null || allImported}
+                        onClick={() => runImport(group.incidents, label)}
+                        disabled={importingKey !== null || allImported}
                         className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                           allImported
                             ? 'bg-emerald-100 text-emerald-700'
@@ -300,7 +371,7 @@ export default function SyncPage() {
                       >
                         {allImported ? (
                           <><CheckCircle2 size={12} /> Imported</>
-                        ) : importing ? (
+                        ) : isImportingThisGroup ? (
                           <><Loader2 size={12} className="animate-spin" /> Importing...</>
                         ) : (
                           <><Download size={12} /> Import {group.count}</>

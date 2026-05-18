@@ -6,6 +6,18 @@
 
 CREATE TABLE IF NOT EXISTS rexus_incidents_v3 (LIKE rexus_incidents INCLUDING ALL);
 
+-- Problem state cache — queried by /analyze during playbook generation
+CREATE TABLE IF NOT EXISTS rexus_problems (
+    problem_id VARCHAR(50) PRIMARY KEY,
+    short_description TEXT,
+    state VARCHAR(50),
+    state_display VARCHAR(50),
+    priority VARCHAR(50),
+    opened_at TIMESTAMP,
+    closed_at TIMESTAMP,
+    last_synced TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Ensure the HNSW vector index exists on v3 (same as rexus_incidents)
 CREATE INDEX IF NOT EXISTS idx_rexus_incidents_v3_embedding
 ON rexus_incidents_v3 USING hnsw (embedding vector_cosine_ops)

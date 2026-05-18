@@ -3,7 +3,7 @@ import { BASE } from '../api';
 import { Zap, Loader2, Upload, ChevronDown, BookOpen, AlertCircle, Copy, Check, Mic, MicOff, Send, MessageSquare, Search } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { api, type AnalyzeResult } from '../api';
+import { api, type AnalyzeResult, type KbArticle } from '../api';
 
 type Step = 'idle' | 'fetching' | 'parsing' | 'embedding' | 'searching' | 'playbooks' | 'done';
 
@@ -27,7 +27,7 @@ export default function AnalyzePage() {
   const [expandedInc, setExpandedInc] = useState<string | null>(null);
   const [error, setError] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
-  const [isDev, setIsDev] = useState(false);
+  const [isDev, setIsDev] = useState(true);
 
   // Check environment — hide PDF upload in production
   useEffect(() => {
@@ -225,7 +225,8 @@ export default function AnalyzePage() {
           {/* Row 1: Confidence + Cluster + Problem Tag */}
           <div className="grid grid-cols-[auto_1fr_auto] gap-3 items-stretch">
             {/* Confidence */}
-            <div className="bg-white rounded-lg p-3 shadow-sm border border-slate-100 flex items-center gap-3">              <p className={`text-2xl font-bold ${confidenceColor(result.confidence_score)}`}>
+            <div className="bg-white rounded-lg p-3 shadow-sm border border-slate-100 flex items-center gap-3">              
+	    <p className={`text-2xl font-bold ${confidenceColor(result.confidence_score)}`}>
                 {(Math.min(result.confidence_score, 1) * 100).toFixed(0)}%
               </p>
               <div>
@@ -260,6 +261,9 @@ export default function AnalyzePage() {
               </div>
             )}
           </div>
+
+          {/* Row 1b: Knowledge Articles (always visible — N/A if none) */}
+          <KbArticlesPanel articles={result.focused_playbook?.kb_articles || []} />
 
           {/* Row 2: Playbook (always visible) */}
           {result.focused_playbook?.playbook && (
@@ -306,7 +310,8 @@ export default function AnalyzePage() {
                       onClick={() => setExpandedInc(expandedInc === inc.incident_number ? null : inc.incident_number)}>
                       <td className="px-2 py-1 font-mono text-blue-600">{inc.incident_number}</td>
                       <td className="px-2 py-1 text-slate-700 truncate max-w-xs">{inc.short_description}</td>
-                      <td className="px-2 py-1 text-slate-500">{inc.cmdb_ci}</td>                      <td className={`px-2 py-1 text-right font-semibold ${confidenceColor(inc.similarity_score || 0)}`}>
+                      <td className="px-2 py-1 text-slate-500">{inc.cmdb_ci}</td>                      
+		      <td className={`px-2 py-1 text-right font-semibold ${confidenceColor(inc.similarity_score || 0)}`}>
                         {(Math.min(inc.similarity_score || 0, 1) * 100).toFixed(0)}%
                       </td>
                     </tr>
@@ -421,6 +426,53 @@ function FeedbackBox({ analysisId, incidentNumber }: { analysisId?: number; inci
           {submitted ? <Check size={12} /> : submitting ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />}
           {submitted ? 'Sent!' : 'Send'}
         </button>
+      </div>
+    </div>
+  );
+}
+
+function KbArticlesPanel({ articles }: { articles: KbArticle[] }) {
+  const has = articles && articles.length > 0;
+  return (
+    <div className="bg-white rounded-lg shadow-sm border border-amber-200 overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-2.5 bg-amber-50 border-b border-amber-100">
+        <div className="flex items-center gap-2">
+          <BookOpen size={16} className="text-amber-700" />
+          <h3 className="text-sm font-semibold text-amber-900">Knowledge Articles</h3>
+          {has && (
+            <span className="text-xs px-2 py-0.5 bg-amber-200 text-amber-900 rounded-full font-medium">
+              {articles.length}
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="px-4 py-3">
+        {!has ? (
+          <p className="text-sm text-slate-400 italic">N/A — no knowledge article attached to this incident.</p>
+        ) : (
+          <ul className="space-y-2">
+            {articles.map((ka) => (
+              <li key={ka.sys_id || ka.number} className="flex items-start gap-3">
+                <span className="font-mono text-xs text-amber-700 shrink-0 pt-0.5">{ka.number}</span>
+                {ka.url ? (
+                  <a
+                    href={ka.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-blue-600 hover:text-blue-800 hover:underline flex-1"
+                  >
+                    {ka.short_description || ka.number}
+                  </a>
+                ) : (
+                  <span className="text-sm text-slate-700 flex-1">{ka.short_description || ka.number}</span>
+                )}
+                {ka.kb_category_display && (
+                  <span className="text-[10px] text-slate-500 shrink-0">{ka.kb_category_display}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   );

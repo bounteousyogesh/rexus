@@ -37,6 +37,9 @@ limiter = Limiter(key_func=get_remote_address)
 # Prevents runaway memory consumption on large backlogs.
 _SYNC_DELTA_MAX = int(os.getenv("SYNC_DELTA_MAX", "2000"))
 
+# SEC-020: Max incident numbers per POST /sync/import (env: SYNC_IMPORT_MAX_INCIDENTS).
+_SYNC_IMPORT_MAX = int(os.getenv("SYNC_IMPORT_MAX_INCIDENTS", "1000"))
+
 
 
 def _get_sn_client():
@@ -50,7 +53,28 @@ def _get_sn_client():
 # before the API is deployed). Falls back to the incident_catalog.csv
 # exported from the dev environment.
 
-_CATALOG_PATH = Path(os.getenv("CATALOG_PATH", "/app/data/incident_catalog.csv"))
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+_DEFAULT_CATALOG = _REPO_ROOT / "data" / "incident_catalog.csv"
+# Docker sets CATALOG_PATH=/app/data/incident_catalog.csv; local dev uses repo data/
+_CATALOG_PATH = Path(os.getenv("CATALOG_PATH", str(_DEFAULT_CATALOG)))
+
+
+def _catalog_date_bounds() -> tuple[str | None, str | None]:
+    """Return (min_date, max_date) YYYY-MM-DD from the CSV catalog, if present."""
+    if not _CATALOG_PATH.exists():
+        return None, None
+    min_d: str | None = None
+    max_d: str | None = None
+    with open(_CATALOG_PATH, encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            opened = (row.get("opened_at") or "")[:10]
+            if len(opened) < 10:
+                continue
+            if min_d is None or opened < min_d:
+                min_d = opened
+            if max_d is None or opened > max_d:
+                max_d = opened
+    return min_d, max_d
 
 
 def _load_from_catalog(
@@ -88,6 +112,7 @@ def _load_from_catalog(
             results.append({
                 "number": row.get("incident_number", ""),
                 "short_description": (row.get("short_description", "") or "")[:80] if "short_description" in row else "",
+                "opened_at": opened,
                 "sys_created_on": opened,
                 "cmdb_ci_display": row.get("cmdb_ci", ""),
                 "category": row.get("category", ""),
@@ -289,6 +314,8 @@ async def sync_status():
     except Exception as e:
         sn_closed_count = f"Error: {e}"
 
+    catalog_min, catalog_max = _catalog_date_bounds()
+
     return {
         "database": {
             "total_incidents": db_count,
@@ -298,6 +325,13 @@ async def sync_status():
         "servicenow": {
             "closed_incidents": sn_closed_count,
         },
+        "catalog": {
+            "path": str(_CATALOG_PATH),
+            "available": _CATALOG_PATH.exists(),
+            "date_min": catalog_min,
+            "date_max": catalog_max,
+        },
+        "import_max_incidents": _SYNC_IMPORT_MAX,
     }
 
 
@@ -434,11 +468,28 @@ async def sync_delta(
     sorted_weeks = sorted(weeks.items(), key=lambda x: x[0], reverse=True)
     sorted_days = sorted(days.items(), key=lambda x: x[0], reverse=True)
 
+    catalog_min, catalog_max = _catalog_date_bounds()
+    message = None
+    if not sn_list:
+        if not _CATALOG_PATH.exists():
+            message = (
+                f"Incident catalog not found at {_CATALOG_PATH}. "
+                "Set CATALOG_PATH in .env or ensure data/incident_catalog.csv exists."
+            )
+        else:
+            message = (
+                f"No closed incidents in catalog for {start_date} → {end_date}. "
+                f"Catalog covers {catalog_min} → {catalog_max} (some months may be missing)."
+            )
+
     return {
         "total_delta": len(delta),
         "total_discovered": len(sn_list),
         "already_in_db": len(existing_set),
         "source": source,
+        "message": message,
+        "catalog_date_min": catalog_min,
+        "catalog_date_max": catalog_max,
         "date_range": {"start": start_date, "end": end_date, "closed_only": closed_only},
         "by_month": [{"month": m, "count": len(incs), "incidents": incs} for m, incs in sorted_months],
         "by_week": [{"week": w, "count": len(incs), "incidents": incs} for w, incs in sorted_weeks],
@@ -451,7 +502,7 @@ IncidentNumber = Annotated[str, Field(min_length=3, max_length=20, pattern=r'^IN
 
 
 class ImportRequest(BaseModel):
-    incident_numbers: list[IncidentNumber] = Field(..., max_length=50)
+    incident_numbers: list[IncidentNumber] = Field(..., max_length=_SYNC_IMPORT_MAX)
 
 
 @router.post("/sync/import")

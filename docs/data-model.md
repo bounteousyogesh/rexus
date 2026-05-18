@@ -95,6 +95,15 @@ erDiagram
         timestamp last_synced
     }
 
+    rexus_kb_article_incident_mapping {
+        int id PK
+        varchar incident_number "INC2394139"
+        varchar knowledge_article_number "KB0020233"
+        varchar apcr "apcr 0"
+        text kb_description "Mandatory Credit Card details"
+        timestamp created_at
+    }
+
     rexus_wave_results {
         int id PK
         varchar wave "wave_1 to wave_5"
@@ -152,6 +161,7 @@ erDiagram
 | **rexus_wave_results** | 1,899 | Validation test results across 5 waves | — |
 | **rexus_token_usage** | — | LLM API call tracking for cost monitoring (OpenAI or Bedrock) | — |
 | **rexus_users** | — | User accounts for JWT authentication (admin, analyst, viewer roles) | — |
+| **rexus_kb_article_incident_mapping** | curated seed | Local incident→KB fallback mappings loaded from CSV at startup | — |
 
 ## Vector Search Architecture
 
@@ -215,6 +225,8 @@ flowchart LR
 | rexus_token_usage | `created_idx` | B-tree | Token usage dashboard | 003 |
 | rexus_users | `idx_rexus_users_username` | B-tree | Fast username lookup for login | 005 |
 | rexus_users | `idx_rexus_users_role` | B-tree | Role-based user queries | 005 |
+| rexus_kb_article_incident_mapping | `idx_kb_article_incident_mapping_incident` | B-tree | Incident-based KB fallback lookup | 007 |
+| rexus_kb_article_incident_mapping | `idx_kb_article_incident_mapping_kb` | B-tree | KB article lookup and dedupe support | 007 |
 
 ## Data Flow
 

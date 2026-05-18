@@ -599,7 +599,7 @@ async def analyze_ticket(request: Request, req: AnalyzeRequest):
                           similarity(short_description, $1)::float AS similarity_score,
                           NULL::int as cluster_id
                    FROM rexus_incidents_v3
-                   WHERE split_group IN ('training',  'analyzed', 'synced')
+                   WHERE split_group IN ('training', 'analyzed', 'synced')
                      AND short_description % $1
                    ORDER BY similarity(short_description, $1) DESC
                    LIMIT $2""",
@@ -692,6 +692,12 @@ async def analyze_ticket(request: Request, req: AnalyzeRequest):
     )
     focused_playbook = await _generate_focused_playbook(
         cleaned_issue, incident_details, incoming_cmdb, dict(cluster_info) if cluster_info else None, pool
+    )
+
+    incoming_kb = req.ticket_json.get("kb_articles")
+    focused_playbook["kb_articles"] = await _resolve_kb_articles(
+        incoming_kb if isinstance(incoming_kb, list) else [],
+        incident_number,
     )
 
     # SEC-003 FIX: Don't expose embedding_text (contains sensitive concatenated data)
@@ -808,13 +814,123 @@ async def analyze_text(request: Request, req: AnalyzeTextRequest):
 
 # ── ServiceNow incident fetch + analyze ──────────────────────────
 
-def _build_ticket_json_from_sn(data: dict, incident_number: str) -> dict:
+def _build_kb_url(number: str) -> str:
+    """Construct a public ServiceNow KB article view URL."""
+    instance = os.getenv("SERVICENOW_INSTANCE", "").rstrip("/")
+    if not instance or not number:
+        return ""
+    return f"{instance}/kb_view.do?sysparm_article={number}"
+
+
+def _extract_kb_articles(data: dict) -> list[dict]:
+    """Pull KB articles from a ServiceNow response (detailed or search shape) and add a viewable URL."""
+    raw = data.get("kb_articles")
+    if not raw:
+        inc = data.get("incident") or {}
+        raw = inc.get("kb_articles") if isinstance(inc, dict) else None
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for ka in raw:
+        if not isinstance(ka, dict):
+            continue
+        number = ka.get("number", "")
+        out.append({
+            "sys_id": ka.get("sys_id", ""),
+            "number": number,
+            "short_description": ka.get("short_description", ""),
+            "kb_category_display": ka.get("kb_category_display", ""),
+            "attached_on": ka.get("attached_on", ""),
+            "url": _build_kb_url(number),
+        })
+    return out
+
+
+def _normalize_kb_article(ka: dict) -> dict | None:
+    """Normalize KB article dicts from ServiceNow, ticket JSON, or the mapping table."""
+    number = (ka.get("number") or ka.get("knowledge_article_number") or "").strip()
+    if not number:
+        return None
+    return {
+        "sys_id": ka.get("sys_id", ""),
+        "number": number,
+        "short_description": ka.get("short_description") or ka.get("kb_description") or "",
+        "kb_category_display": ka.get("kb_category_display", ""),
+        "attached_on": ka.get("attached_on", ""),
+        "url": ka.get("url") or _build_kb_url(number),
+        "source": ka.get("source", "servicenow"),
+    }
+
+
+async def _get_kb_article_fallbacks(incident_number: str) -> list[dict]:
+    """Load KB article mappings from the local reference table when ServiceNow returns none."""
+    if not incident_number:
+        return []
+
+    incident_number = incident_number.strip().upper()
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT knowledge_article_number, kb_description
+                   FROM rexus_kb_article_incident_mapping
+                   WHERE UPPER(TRIM(incident_number)) = $1
+                   ORDER BY knowledge_article_number""",
+                incident_number,
+            )
+    except Exception as e:
+        logger.warning("KB article fallback lookup failed for %s: %s", incident_number, e)
+        return []
+
+    articles = []
+    for row in rows:
+        number = row["knowledge_article_number"]
+        articles.append({
+            "sys_id": "",
+            "number": number,
+            "short_description": row["kb_description"] or "",
+            "kb_category_display": "",
+            "attached_on": "",
+            "url": _build_kb_url(number),
+            "source": "mapping_table",
+        })
+    return articles
+
+
+async def _resolve_kb_articles(
+    ticket_kb: list,
+    incident_number: str,
+) -> list[dict]:
+    """Merge KB articles from ticket JSON with rexus_kb_article_incident_mapping."""
+    articles: list[dict] = []
+    seen: set[str] = set()
+
+    for ka in ticket_kb:
+        if not isinstance(ka, dict):
+            continue
+        normalized = _normalize_kb_article(ka)
+        if normalized and normalized["number"] not in seen:
+            seen.add(normalized["number"])
+            articles.append(normalized)
+
+    if incident_number:
+        for ka in await _get_kb_article_fallbacks(incident_number):
+            if ka["number"] not in seen:
+                seen.add(ka["number"])
+                articles.append(ka)
+
+    return articles
+
+
+async def _build_ticket_json_from_sn(data: dict, incident_number: str) -> dict:
     """Convert ServiceNow detailed API response to ticket_json format."""
     inc = data.get("incident", {})
     res = data.get("resolution", {})
     notes = data.get("notes", {})
     order = data.get("order_data", {})
     contact = data.get("contact", {})
+    kb_articles = await _resolve_kb_articles(_extract_kb_articles(data), incident_number)
 
     comments_list = notes.get("comments", [])
     comments_text = ""
@@ -859,6 +975,7 @@ def _build_ticket_json_from_sn(data: dict, incident_number: str) -> dict:
             "Close notes": res.get("close_notes", ""),
             "Close code": res.get("close_code_display", ""),
         },
+        "kb_articles": kb_articles,
     }
 
 
@@ -882,7 +999,7 @@ async def fetch_from_servicenow(request: Request, incident_number: str):
     if not data:
         raise HTTPException(404, f"Incident {incident_number} not found in ServiceNow")
 
-    return _build_ticket_json_from_sn(data, incident_number)
+    return await _build_ticket_json_from_sn(data, incident_number)
 
 
 @router.post("/analyze/incident/{incident_number}", response_model=AnalyzeResponse)
@@ -906,7 +1023,7 @@ async def analyze_from_servicenow(request: Request, incident_number: str,
     if not data:
         raise HTTPException(404, f"Incident {incident_number} not found in ServiceNow")
 
-    ticket_json = _build_ticket_json_from_sn(data, incident_number)
+    ticket_json = await _build_ticket_json_from_sn(data, incident_number)
     wrapped_req = AnalyzeRequest(ticket_json=ticket_json, limit=limit, threshold=threshold)
     return await analyze_ticket(request, wrapped_req)
 

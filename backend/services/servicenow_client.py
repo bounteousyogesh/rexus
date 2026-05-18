@@ -228,11 +228,15 @@ class ServiceNowClient:
 
     # ── Detailed API ──────────────────────────────────────────────────
 
-    def get_incident_detailed(self, incident_number: str) -> dict[str, Any] | None:
-        """Fetch full incident with work notes via DT custom API."""
+    def get_incident_detailed(self, incident_number: str, include_kb_articles: bool = True) -> dict[str, Any] | None:
+        """Fetch full incident with work notes (and attached KB articles) via DT custom API."""
+        params = {}
+        if include_kb_articles:
+            params["include_kb_articles"] = "true"
         resp = requests.get(
             f"{self.instance_url}/api/ditci/v1/servicenow/incident/{incident_number}/detailed",
             headers=self._headers(),
+            params=params,
             timeout=self._timeout,
         )
         if resp.status_code == 200:
@@ -240,6 +244,24 @@ class ServiceNowClient:
             if data.get("result", {}).get("success"):
                 return data["result"]["data"]
         return None
+
+    def search_incident_by_number(self, incident_number: str, include_kb_articles: bool = True) -> dict[str, Any] | None:
+        """Fallback: fetch a single incident via the search API (returns kb_articles too)."""
+        search_path = os.getenv("SERVICENOW_SEARCH_PATH", "/api/ditci/v1/servicenow/incident/search")
+        params: dict[str, str] = {"number": incident_number}
+        if include_kb_articles:
+            params["include_kb_articles"] = "true"
+        resp = requests.get(
+            f"{self.instance_url}{search_path}",
+            headers=self._headers(),
+            params=params,
+            timeout=self._timeout,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        incidents = data.get("result", {}).get("data", {}).get("incidents", [])
+        return incidents[0] if incidents else None
 
     # ── Convenience ───────────────────────────────────────────────────
 

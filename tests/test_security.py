@@ -326,8 +326,10 @@ def test_feedback_with_maximum_boundary_text_is_not_rejected(client: httpx.Clien
 # SEC-020: Import batch size cap
 # ===========================================================================
 
-def test_sync_import_batch_size_cap_is_enforced_at_51_incidents(client: httpx.Client):
-    """SEC-020: POST /sync/import with 51 incidents must be rejected with 400."""
-    payload = {"incident_numbers": [f"INC{i:07d}" for i in range(1, 52)]}
+def test_sync_import_batch_size_cap_is_enforced_above_max(client: httpx.Client):
+    """SEC-020: POST /sync/import above SYNC_IMPORT_MAX_INCIDENTS must be rejected with 422."""
+    from backend.api.routers.sync import _SYNC_IMPORT_MAX
+
+    payload = {"incident_numbers": [f"INC{i:07d}" for i in range(1, _SYNC_IMPORT_MAX + 2)]}
     response = client.post("/api/v1/sync/import", json=payload)
-    assert response.status_code == 400
+    assert response.status_code == 422
