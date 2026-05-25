@@ -3,7 +3,9 @@ REX-US PDF Parser — Extracts structured fields from ServiceNow incident PDFs.
 Ported from NEXUS with improvements.
 """
 
+import os
 import re
+import tempfile
 from pathlib import Path
 from datetime import datetime
 
@@ -50,6 +52,40 @@ BROKEN_WORDS = {
     r'\bmana\s+gement\b': 'management',
     r'\bbusi\s+ness\b': 'business',
 }
+
+
+def extract_plain_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
+    """Extract plain text from PDF bytes (pdfplumber, then PyMuPDF)."""
+    if not pdf_bytes.startswith(b"%PDF"):
+        return ""
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(pdf_bytes)
+            tmp_path = tmp.name
+        if HAS_PDFPLUMBER:
+            parts: list[str] = []
+            with pdfplumber.open(tmp_path) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        parts.append(page_text)
+            if parts:
+                return "\n".join(parts)
+        if HAS_PYMUPDF:
+            doc = fitz.open(tmp_path)
+            parts = [page.get_text() for page in doc]
+            doc.close()
+            return "\n".join(parts)
+        return ""
+    except Exception:
+        return ""
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 def clean_text(text: str) -> str:

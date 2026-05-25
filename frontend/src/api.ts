@@ -80,6 +80,11 @@ export interface KbArticle {
   kb_category_display?: string;
   attached_on?: string;
   url?: string;
+  has_pdf?: boolean;
+  /** Set on analyze response when PDF was loaded once server-side. */
+  pdf_base64?: string;
+  kb_title?: string;
+  source?: string;
 }
 
 export interface Cluster {
@@ -142,6 +147,7 @@ export interface AnalyzeResult {
     order_ids: string[];
     jira_tickets: string[];
     kb_articles?: KbArticle[];
+    playbook_source?: 'knowledge_article' | 'similar_incidents';
   };
   resolution_patterns: {
     incident_number: string;

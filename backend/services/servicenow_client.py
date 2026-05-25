@@ -263,6 +263,34 @@ class ServiceNowClient:
         incidents = data.get("result", {}).get("data", {}).get("incidents", [])
         return incidents[0] if incidents else None
 
+    # ── Knowledge article API (REX-US analyze) ──────────────────────
+
+    def get_knowledge_article(self, kb_number: str) -> dict[str, Any] | None:
+        """
+        Fetch a knowledge article via DT custom API.
+
+        GET /api/ditci/v1/servicenow/article/{kb_number}
+        Returns result.data with ``article`` and ``pdf`` (base64) keys.
+        """
+        kb_number = kb_number.strip().upper()
+        if not kb_number:
+            return None
+
+        article_path = os.getenv(
+            "SERVICENOW_SEARCH_PATH",
+            "/api/ditci/v1/servicenow/article",
+        ).rstrip("/")
+        resp = requests.get(
+            f"{self.instance_url}{article_path}/{kb_number}",
+            headers=self._headers(),
+            timeout=self._timeout,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("result", {}).get("success"):
+                return data["result"]["data"]
+        return None
+
     # ── Convenience ───────────────────────────────────────────────────
 
     INCIDENT_FIELDS = [

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { BASE } from '../api';
+import { KbArticlePdfViewer } from '../components/KbArticlePdfViewer';
 import { Zap, Loader2, Upload, ChevronDown, BookOpen, AlertCircle, Copy, Check, Mic, MicOff, Send, MessageSquare, Search } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -263,9 +264,9 @@ export default function AnalyzePage() {
           </div>
 
           {/* Row 1b: Knowledge Articles (always visible — N/A if none) */}
-          <KbArticlesPanel articles={result.focused_playbook?.kb_articles || []} />
+          <KnowledgeArticlesSection articles={result.focused_playbook?.kb_articles || []} />
 
-          {/* Row 2: Playbook (always visible) */}
+          {/* Row 2: Playbook or KB summary (from similar incidents vs knowledge article) */}
           {result.focused_playbook?.playbook && (
             <CollapsiblePlaybook
               title="Playbook"
@@ -273,7 +274,9 @@ export default function AnalyzePage() {
               grounding={result.focused_playbook.grounding_score}
               sourceCount={result.focused_playbook.source_incident_count}
               totalSimilar={result.focused_playbook.total_similar}
-              defaultOpen={true}
+              defaultOpen={
+                !(result.focused_playbook.kb_articles ?? []).some((ka) => ka.pdf_base64)
+              }
             />
           )}
 
@@ -431,49 +434,74 @@ function FeedbackBox({ analysisId, incidentNumber }: { analysisId?: number; inci
   );
 }
 
-function KbArticlesPanel({ articles }: { articles: KbArticle[] }) {
-  const has = articles && articles.length > 0;
+function KnowledgeArticlesSection({ articles }: { articles: KbArticle[] }) {
+  const has = articles.length > 0;
+  const withPdf = articles.filter((ka) => ka.pdf_base64);
+
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-amber-200 overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-2.5 bg-amber-50 border-b border-amber-100">
-        <div className="flex items-center gap-2">
-          <BookOpen size={16} className="text-amber-700" />
-          <h3 className="text-sm font-semibold text-amber-900">Knowledge Articles</h3>
-          {has && (
-            <span className="text-xs px-2 py-0.5 bg-amber-200 text-amber-900 rounded-full font-medium">
-              {articles.length}
-            </span>
+    <div className="space-y-3">
+      <div className="bg-white rounded-lg shadow-sm border border-amber-200 overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-2.5 bg-amber-50 border-b border-amber-100">
+          <div className="flex items-center gap-2">
+            <BookOpen size={16} className="text-amber-700" />
+            <h3 className="text-sm font-semibold text-amber-900">Knowledge Articles</h3>
+            {has && (
+              <span className="text-xs px-2 py-0.5 bg-amber-200 text-amber-900 rounded-full font-medium">
+                {articles.length}
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="px-4 py-3">
+          {!has ? (
+            <p className="text-sm text-slate-400 italic">N/A — no knowledge article attached to this incident.</p>
+          ) : (
+            <ul className="space-y-2">
+              {articles.map((ka) => (
+                <li key={ka.sys_id || ka.number} className="flex items-start gap-3">
+                  <span className="font-mono text-xs text-amber-700 shrink-0 pt-0.5">{ka.number}</span>
+                  {ka.url ? (
+                    <a
+                      href={ka.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sm text-blue-600 hover:text-blue-800 hover:underline flex-1"
+                    >
+                      {ka.short_description || ka.number}
+                    </a>
+                  ) : (
+                    <span className="text-sm text-slate-700 flex-1">{ka.short_description || ka.number}</span>
+                  )}
+                  {ka.kb_category_display && (
+                    <span className="text-[10px] text-slate-500 shrink-0">{ka.kb_category_display}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
           )}
         </div>
       </div>
-      <div className="px-4 py-3">
-        {!has ? (
-          <p className="text-sm text-slate-400 italic">N/A — no knowledge article attached to this incident.</p>
-        ) : (
-          <ul className="space-y-2">
-            {articles.map((ka) => (
-              <li key={ka.sys_id || ka.number} className="flex items-start gap-3">
-                <span className="font-mono text-xs text-amber-700 shrink-0 pt-0.5">{ka.number}</span>
-                {ka.url ? (
-                  <a
-                    href={ka.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-sm text-blue-600 hover:text-blue-800 hover:underline flex-1"
-                  >
-                    {ka.short_description || ka.number}
-                  </a>
-                ) : (
-                  <span className="text-sm text-slate-700 flex-1">{ka.short_description || ka.number}</span>
-                )}
-                {ka.kb_category_display && (
-                  <span className="text-[10px] text-slate-500 shrink-0">{ka.kb_category_display}</span>
-                )}
-              </li>
+
+      {withPdf.length > 0 && (
+        <div className="bg-white rounded-lg shadow-sm border border-amber-200 overflow-hidden">
+          <div className="px-4 py-2.5 bg-amber-50 border-b border-amber-100">
+            <h3 className="text-sm font-semibold text-amber-900">Knowledge Article PDF</h3>
+          </div>
+          <div className="px-4 py-3 space-y-6">
+            {withPdf.map((ka) => (
+              <div key={`pdf-${ka.number}`}>
+                <p className="text-xs font-semibold text-amber-800 mb-2">
+                  {ka.number}
+                  {ka.short_description && (
+                    <span className="font-normal text-amber-700"> — {ka.short_description}</span>
+                  )}
+                </p>
+                <KbArticlePdfViewer article={ka} />
+              </div>
             ))}
-          </ul>
-        )}
-      </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
