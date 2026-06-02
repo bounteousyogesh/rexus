@@ -85,6 +85,9 @@ export interface KbArticle {
   pdf_base64?: string;
   kb_title?: string;
   source?: string;
+  /** Similar-incident match % used to select this KB (0–100). */
+  match_percent?: number;
+  matched_via_incident?: string;
 }
 
 export interface Cluster {
@@ -147,6 +150,10 @@ export interface AnalyzeResult {
     order_ids: string[];
     jira_tickets: string[];
     kb_articles?: KbArticle[];
+    kb_source?: string;
+    kb_source_incident?: string;
+    kb_match_percent?: number;
+    /** Set when playbook text is summarized from a linked knowledge article. */
     playbook_source?: 'knowledge_article' | 'similar_incidents';
   };
   resolution_patterns: {

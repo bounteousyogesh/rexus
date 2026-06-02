@@ -263,36 +263,40 @@ export default function AnalyzePage() {
             )}
           </div>
 
-          {/* Row 1b: Knowledge Articles (always visible — N/A if none) */}
-          <KnowledgeArticlesSection articles={result.focused_playbook?.kb_articles || []} />
+          {/* Row 1b: Knowledge Article from similar incidents (URL + PDF when available) */}
+          <KnowledgeArticlesSection
+            articles={result.focused_playbook?.kb_articles || []}
+          />
 
-          {/* Row 2: Playbook or KB summary (from similar incidents vs knowledge article) */}
+          {/* Row 2: Playbook (KB summary when linked, else similar-incident LLM) */}
           {result.focused_playbook?.playbook && (
             <CollapsiblePlaybook
-              title="Playbook"
+              title={
+                hasKbArticleNumber(result.focused_playbook.kb_articles)
+                  ? 'Playbook (Knowledge Article)'
+                  : 'Playbook'
+              }
               content={result.focused_playbook.playbook}
               grounding={result.focused_playbook.grounding_score}
               sourceCount={result.focused_playbook.source_incident_count}
               totalSimilar={result.focused_playbook.total_similar}
-              defaultOpen={
-                !(result.focused_playbook.kb_articles ?? []).some((ka) => ka.pdf_base64)
+              sourceDetail={
+                hasKbArticleNumber(result.focused_playbook.kb_articles)
+                  ? [
+                      result.focused_playbook.kb_articles?.[0]?.number,
+                      result.focused_playbook.kb_source_incident
+                        ? `via ${result.focused_playbook.kb_source_incident}`
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')
+                  : undefined
               }
+              defaultOpen={!hasKbArticleNumber(result.focused_playbook.kb_articles)}
             />
           )}
 
-          {/* Row 3: Resolution Notes (collapsed by default) */}
-          {result.focused_playbook?.notes && (
-            <CollapsiblePlaybook
-              title="Detailed Resolution Notes"
-              content={result.focused_playbook.notes}
-              grounding={result.focused_playbook.grounding_score}
-              sourceCount={result.focused_playbook.source_incident_count}
-              totalSimilar={result.focused_playbook.total_similar}
-              defaultOpen={false}
-            />
-          )}
-
-          {/* Row 4: Similar Incidents (compact table, collapsed) */}
+          {/* Row 3: Similar Incidents (compact table, collapsed) */}
           <details className="bg-white rounded-lg shadow-sm border border-slate-100 overflow-hidden">
             <summary className="p-3 cursor-pointer text-xs font-semibold text-slate-600 hover:bg-slate-50">
               Similar Incidents ({result.similar_incidents.length})
@@ -434,80 +438,93 @@ function FeedbackBox({ analysisId, incidentNumber }: { analysisId?: number; inci
   );
 }
 
+function hasKbArticleNumber(kbArticles?: KbArticle[]): boolean {
+  return Boolean(kbArticles?.some((a) => a.number?.trim()));
+}
+
 function KnowledgeArticlesSection({ articles }: { articles: KbArticle[] }) {
   const has = articles.length > 0;
-  const withPdf = articles.filter((ka) => ka.pdf_base64);
 
   return (
-    <div className="space-y-3">
-      <div className="bg-white rounded-lg shadow-sm border border-amber-200 overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-2.5 bg-amber-50 border-b border-amber-100">
-          <div className="flex items-center gap-2">
-            <BookOpen size={16} className="text-amber-700" />
-            <h3 className="text-sm font-semibold text-amber-900">Knowledge Articles</h3>
-            {has && (
-              <span className="text-xs px-2 py-0.5 bg-amber-200 text-amber-900 rounded-full font-medium">
-                {articles.length}
-              </span>
-            )}
-          </div>
-        </div>
-        <div className="px-4 py-3">
-          {!has ? (
-            <p className="text-sm text-slate-400 italic">N/A — no knowledge article attached to this incident.</p>
-          ) : (
-            <ul className="space-y-2">
-              {articles.map((ka) => (
-                <li key={ka.sys_id || ka.number} className="flex items-start gap-3">
-                  <span className="font-mono text-xs text-amber-700 shrink-0 pt-0.5">{ka.number}</span>
-                  {ka.url ? (
-                    <a
-                      href={ka.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-sm text-blue-600 hover:text-blue-800 hover:underline flex-1"
-                    >
-                      {ka.short_description || ka.number}
-                    </a>
-                  ) : (
-                    <span className="text-sm text-slate-700 flex-1">{ka.short_description || ka.number}</span>
-                  )}
-                  {ka.kb_category_display && (
-                    <span className="text-[10px] text-slate-500 shrink-0">{ka.kb_category_display}</span>
-                  )}
-                </li>
-              ))}
-            </ul>
+    <div className="bg-white rounded-lg shadow-sm border border-amber-200 overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-2.5 bg-amber-50 border-b border-amber-100">
+        <div className="flex items-center gap-2">
+          <BookOpen size={16} className="text-amber-700" />
+          <h3 className="text-sm font-semibold text-amber-900">Knowledge Article</h3>
+          {has && (
+            <span className="text-xs px-2 py-0.5 bg-amber-200 text-amber-900 rounded-full font-medium">
+              from similar incident
+            </span>
           )}
         </div>
       </div>
+      <div className="px-4 py-3">
+        {!has ? (
+          <p className="text-sm text-slate-400 italic">
+            N/A — no knowledge article linked to a similar incident.
+          </p>
+        ) : (
+          <div className="space-y-6">
+            {articles.map((ka) => {
+              const hasNumber = Boolean(ka.number?.trim());
+              const showPdfViewer = Boolean(ka.pdf_base64);
 
-      {withPdf.length > 0 && (
-        <div className="bg-white rounded-lg shadow-sm border border-amber-200 overflow-hidden">
-          <div className="px-4 py-2.5 bg-amber-50 border-b border-amber-100">
-            <h3 className="text-sm font-semibold text-amber-900">Knowledge Article PDF</h3>
-          </div>
-          <div className="px-4 py-3 space-y-6">
-            {withPdf.map((ka) => (
-              <div key={`pdf-${ka.number}`}>
-                <p className="text-xs font-semibold text-amber-800 mb-2">
-                  {ka.number}
-                  {ka.short_description && (
-                    <span className="font-normal text-amber-700"> — {ka.short_description}</span>
+              return (
+                <article key={ka.sys_id || ka.number} className="space-y-3">
+                  <div className="flex items-start gap-3 flex-wrap">
+                    <span className="font-mono text-xs text-amber-700 shrink-0 pt-0.5">{ka.number}</span>
+                    {ka.match_percent != null && (
+                      <span className="text-[10px] px-1.5 py-0.5 bg-emerald-100 text-emerald-800 rounded font-semibold shrink-0">
+                        {ka.match_percent.toFixed(0)}% match
+                        {ka.matched_via_incident ? ` (${ka.matched_via_incident})` : ''}
+                      </span>
+                    )}
+                    {ka.url ? (
+                      <a
+                        href={ka.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm text-blue-600 hover:text-blue-800 hover:underline flex-1"
+                      >
+                        {ka.short_description || ka.kb_title || ka.number}
+                      </a>
+                    ) : (
+                      <span className="text-sm text-slate-700 flex-1">
+                        {ka.short_description || ka.kb_title || ka.number}
+                      </span>
+                    )}
+                    {ka.kb_category_display && (
+                      <span className="text-[10px] text-slate-500 shrink-0">{ka.kb_category_display}</span>
+                    )}
+                  </div>
+                  {hasNumber && (
+                    showPdfViewer ? (
+                      <KbArticlePdfViewer article={ka} />
+                    ) : (
+                      <p className="text-sm text-slate-400 italic">
+                        PDF preview unavailable — open the article link above or check ServiceNow / local KB storage.
+                      </p>
+                    )
                   )}
-                </p>
-                <KbArticlePdfViewer article={ka} />
-              </div>
-            ))}
+                </article>
+              );
+            })}
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
 
-function CollapsiblePlaybook({ title, content, grounding, sourceCount, totalSimilar, defaultOpen }: {
-  title: string; content: string; grounding: number; sourceCount: number; totalSimilar: number; defaultOpen: boolean;
+function CollapsiblePlaybook({ title, content, grounding, sourceCount, totalSimilar, sourceDetail, defaultOpen }: {
+  title: string;
+  content: string;
+  grounding: number;
+  sourceCount: number;
+  totalSimilar: number;
+  /** When set (e.g. KB number), shown instead of incident count subtitle. */
+  sourceDetail?: string;
+  defaultOpen: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
@@ -523,7 +540,7 @@ function CollapsiblePlaybook({ title, content, grounding, sourceCount, totalSimi
             {(grounding * 100).toFixed(0)}% grounded
           </span>
           <span className="text-xs text-emerald-600">
-            {sourceCount} of {totalSimilar} incidents
+            {sourceDetail ?? `${sourceCount} of ${totalSimilar} incidents`}
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -586,4 +603,3 @@ function CopyButton({ text, label }: { text: string; label?: string }) {
     </button>
   );
 }
-

@@ -27,6 +27,7 @@ from backend.api.database import get_pool
 from backend.api.utils.llm_provider import embed_text as _embed_text_fn, get_embed_model
 from backend.api.utils.token_tracker import track_usage
 from backend.api.utils.text_cleaning import clean_for_embedding as _shared_clean_for_embedding
+from backend.api.utils.kb_articles import extract_kb_articles, insert_kb_mappings
 
 logger = logging.getLogger(__name__)
 
@@ -510,7 +511,8 @@ class ImportRequest(BaseModel):
 async def sync_import(request: Request, req: ImportRequest):
     """
     Import specific incidents from ServiceNow into our database.
-    Uses the custom detailed API, generates embeddings, inserts into v3 table.
+    Uses the custom detailed API (with KB articles), generates embeddings,
+    inserts into v3 table, and inserts KB mappings into rexus_kb_article_incident_mapping.
 
     SEC-013: This endpoint modifies the knowledge base. In production it should
     be protected by an admin role or API key (e.g. via a FastAPI dependency).
@@ -561,8 +563,23 @@ async def sync_import(request: Request, req: ImportRequest):
             await track_usage(pool, "embedding", embed_model, emb_tokens, 0,
                               endpoint="/sync/import", incident_number=inc_num)
 
-            # Insert into v3 table (QUAL-012: aligned with analyze.py)
+            kb_list = extract_kb_articles(data)
+            mapping_inc = (flat.get("number") or inc_num).strip().upper()
+            if not kb_list:
+                logger.info(
+                    "Import %s: no KB articles in SN response (checked kb_articles, attached_knowledge)",
+                    mapping_inc,
+                )
+
+            # Insert into v3 table and KB mappings (QUAL-012: aligned with analyze.py)
             async with pool.acquire() as conn:
+                kb_inserted = await insert_kb_mappings(conn, mapping_inc, kb_list)
+                if kb_list and kb_inserted == 0:
+                    logger.info(
+                        "Import %s: %d KB article(s) from SN but all already in mapping table",
+                        mapping_inc,
+                        len(kb_list),
+                    )
                 await conn.execute("""
                     INSERT INTO rexus_incidents_v3 (
                         incident_number, sys_id, short_description, description,
@@ -604,7 +621,12 @@ async def sync_import(request: Request, req: ImportRequest):
                 )
 
             imported += 1
-            results.append({"incident": inc_num, "status": "imported"})
+            results.append({
+                "incident": inc_num,
+                "status": "imported",
+                "kb_inserted": kb_inserted,
+                "kb_from_sn": len(kb_list),
+            })
 
         except Exception as e:
             failed += 1
