@@ -3,7 +3,6 @@ REX-US — FastAPI Backend
 Incident intelligence API powered by pgvector similarity search.
 """
 
-import csv
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -22,59 +21,6 @@ from backend.api.routers import health, incidents, clusters, playbooks, search, 
 from backend.api.routers import auth as auth_router
 
 logger = logging.getLogger("rexus")
-_KB_MAPPING_CSV = Path(__file__).resolve().parent.parent.parent / "data" / "kb_article_incident_mapping.csv"
-
-
-def _get_first_present_value(row: dict[str, str], *keys: str) -> str:
-    for key in keys:
-        value = row.get(key)
-        if value is not None:
-            return value.strip()
-    return ""
-
-
-def _load_kb_article_mapping_rows() -> list[tuple[str, str, str | None, str | None]]:
-    mappings_by_key: dict[tuple[str, str], tuple[str, str, str | None, str | None]] = {}
-
-    with _KB_MAPPING_CSV.open(newline="", encoding="utf-8-sig", errors="replace") as csv_file:
-        reader = csv.DictReader(csv_file)
-        for row in reader:
-            incident_number = _get_first_present_value(row, "incident_number", "incident_no")
-            knowledge_article_number = _get_first_present_value(
-                row,
-                "knowledge_article_number",
-                "knowledge_article_no",
-            )
-            if not incident_number or not knowledge_article_number:
-                continue
-
-            apcr = _get_first_present_value(row, "apcr") or None
-            kb_description = _get_first_present_value(
-                row,
-                "kb_description",
-                "kb_desc",
-                "short_description",
-            ) or None
-
-            key = (incident_number, knowledge_article_number)
-            existing = mappings_by_key.get(key)
-            if existing is None:
-                mappings_by_key[key] = (
-                    incident_number,
-                    knowledge_article_number,
-                    apcr,
-                    kb_description,
-                )
-                continue
-
-            mappings_by_key[key] = (
-                incident_number,
-                knowledge_article_number,
-                existing[2] or apcr,
-                existing[3] or kb_description,
-            )
-
-    return list(mappings_by_key.values())
 
 
 async def _ensure_default_admin() -> None:
@@ -112,11 +58,7 @@ async def _run_migrations() -> None:
         return
 
     pool = await get_pool()
-    # Only numbered migrations (001_*.sql). Never auto-run full-rebuild scripts
-    # such as rexus_schema_sql_prod.sql — they DROP rexus_incidents_v3 and wipe imports.
-    sql_files = sorted(
-        f for f in migrations_dir.glob("*.sql") if f.name[:3].isdigit() and f.name[3] == "_"
-    )
+    sql_files = sorted(migrations_dir.glob("*.sql"))
     for sql_file in sql_files:
         try:
             sql = sql_file.read_text()
@@ -126,42 +68,10 @@ async def _run_migrations() -> None:
             logger.warning("Migration %s skipped (may already be applied): %s", sql_file.name, exc)
 
 
-async def _seed_kb_article_incident_mapping() -> None:
-    """Load KB article mappings from CSV into the reference table."""
-    if not _KB_MAPPING_CSV.is_file():
-        logger.info("KB article mapping CSV not found at %s — skipping seed", _KB_MAPPING_CSV)
-        return
-
-    rows = _load_kb_article_mapping_rows()
-
-    if not rows:
-        logger.info("KB article mapping CSV is empty — skipping seed")
-        return
-
-    pool = await get_pool()
-    await pool.executemany(
-        """INSERT INTO rexus_kb_article_incident_mapping
-           (incident_number, knowledge_article_number, apcr, kb_description)
-           VALUES ($1, $2, $3, $4)
-           ON CONFLICT (incident_number, knowledge_article_number) DO UPDATE SET
-             apcr = COALESCE(EXCLUDED.apcr, rexus_kb_article_incident_mapping.apcr),
-             kb_description = COALESCE(
-                 EXCLUDED.kb_description,
-                 rexus_kb_article_incident_mapping.kb_description
-             )""",
-        rows,
-    )
-    logger.info("KB article mappings ensured from CSV: %d rows", len(rows))
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await get_pool()
     await _run_migrations()
-    try:
-        await _seed_kb_article_incident_mapping()
-    except Exception as exc:
-        logger.warning("KB article mapping seed skipped: %s", exc)
     try:
         await _ensure_default_admin()
     except Exception as exc:

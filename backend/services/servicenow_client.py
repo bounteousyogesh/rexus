@@ -263,35 +263,67 @@ class ServiceNowClient:
         incidents = data.get("result", {}).get("data", {}).get("incidents", [])
         return incidents[0] if incidents else None
 
-    # ── Knowledge article API (REX-US analyze) ──────────────────────
+    # -- Knowledge article API --
 
     def get_knowledge_article(self, kb_number: str) -> dict[str, Any] | None:
         """
-        Fetch a knowledge article via DT custom API.
-
-        GET /api/ditci/v1/servicenow/article/{kb_number}
-        Returns result.data with ``article`` and ``pdf`` (base64) keys.
+        Fetch a knowledge article (metadata + optional PDF) via DT custom API.
+        Falls back to kb_knowledge table API if custom path is unset or fails.
         """
-        kb_number = kb_number.strip().upper()
+        kb_number = (kb_number or "").strip().upper()
         if not kb_number:
             return None
 
-        article_path = os.getenv(
-            "SERVICENOW_SEARCH_PATH",
-            "/api/ditci/v1/servicenow/article",
-        ).rstrip("/")
-        resp = requests.get(
-            f"{self.instance_url}{article_path}/{kb_number}",
-            headers=self._headers(),
-            timeout=self._timeout,
+        kb_path_template = os.getenv(
+            "SERVICENOW_KB_PATH",
+            "/api/ditci/v1/servicenow/knowledge/{kb_number}",
         )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data.get("result", {}).get("success"):
-                return data["result"]["data"]
+        if kb_path_template:
+            path = kb_path_template.format(kb_number=kb_number)
+            try:
+                resp = requests.get(
+                    f"{self.instance_url}{path}",
+                    headers=self._headers(),
+                    timeout=self._timeout,
+                )
+                if resp.status_code == 200:
+                    payload = resp.json()
+                    if isinstance(payload, dict):
+                        result = payload.get("result", payload)
+                        if isinstance(result, dict):
+                            if result.get("success") and result.get("data"):
+                                return result["data"]
+                            if result.get("data") and isinstance(result["data"], dict):
+                                return result["data"]
+                            if "number" in result or "pdf" in result or "short_description" in result:
+                                return result
+                        if "number" in payload or "pdf" in payload:
+                            return payload
+            except Exception as e:
+                logger.warning("KB custom API failed for %s: %s", kb_number, e)
+
+        try:
+            rows = self.query_table(
+                "kb_knowledge",
+                query=f"number={kb_number}",
+                fields=["sys_id", "number", "short_description", "text", "kb_category"],
+                limit=1,
+            )
+            if rows:
+                row = rows[0]
+                return {
+                    "sys_id": row.get("sys_id", ""),
+                    "number": row.get("number", kb_number),
+                    "short_description": row.get("short_description", ""),
+                    "text": row.get("text", ""),
+                    "kb_category_display": row.get("kb_category", ""),
+                }
+        except Exception as e:
+            logger.warning("KB table lookup failed for %s: %s", kb_number, e)
+
         return None
 
-    # ── Convenience ───────────────────────────────────────────────────
+    # -- Convenience --
 
     INCIDENT_FIELDS = [
         "sys_id", "number", "short_description", "description",
