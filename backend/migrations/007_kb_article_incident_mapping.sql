@@ -69,5 +69,6 @@ VALUES
     ('INC2020171', 'KB0020387', NULL, 'Export Status Returns RETRYLATER'),
     ('INC2024334', 'KB0020387', NULL, 'Export Status Returns RETRYLATER'),
     ('INC2025115', 'KB0020387', NULL, 'Export Status Returns RETRYLATER'),
-    ('INC2285121', 'KB0020387', NULL, 'Export Status Returns RETRYLATER')
+    ('INC2285121', 'KB0020387', NULL, 'Export Status Returns RETRYLATER'),
+    ('INC2007084', 'KB0020379', NULL, 'Update Delivery Address')
 ON CONFLICT (incident_number, knowledge_article_number) DO NOTHING;
