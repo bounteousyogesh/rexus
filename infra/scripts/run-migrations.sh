@@ -50,13 +50,8 @@ DRY_RUN=false
 
 # Ordered list of migration files
 MIGRATIONS=(
-  "001_rexus_schema.sql"
-  "002_enriched_schema.sql"
-  "003_token_usage.sql"
-  "005_auth.sql"
-  "006_create_v3_table.sql"
-  "004_indexes_and_extensions.sql"
   "007_kb_article_incident_mapping.sql"
+  "008_create_kb_articles.sql"
 )
 
 # ── Parse CLI arguments ────────────────────────────────────────────────────────
