@@ -51,6 +51,7 @@ async def _run_migrations() -> None:
     Each migration uses IF NOT EXISTS / IF EXISTS guards, so re-running
     is safe. This eliminates the need to manually apply migrations or
     run CLI scripts before using the UI.
+    THIS IS NOT A FULL-FEATURED MIGRATION SYSTEM — it simply runs all .sql files in the migrations directory on startup.
     """
     migrations_dir = Path(__file__).resolve().parent.parent / "migrations"
     if not migrations_dir.is_dir():
