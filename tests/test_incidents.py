@@ -222,6 +222,14 @@ def test_list_incidents_search_filter_matches_short_description_or_close_notes(c
         )
 
 
+def test_list_incidents_search_filter_matches_incident_number(client: httpx.Client):
+    """GET /incidents?search={number} must return the matching incident."""
+    number = _get_first_incident_number(client)
+    body = client.get(INCIDENTS_URL, params={"search": number}).json()
+    assert body["total"] >= 1
+    assert any(item["incident_number"] == number for item in body["items"])
+
+
 # ---------------------------------------------------------------------------
 # Get single incident
 # ---------------------------------------------------------------------------
