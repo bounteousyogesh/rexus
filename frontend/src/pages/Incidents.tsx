@@ -78,9 +78,16 @@ export default function IncidentsPage() {
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e: { target: { value: any; }; }) => {
+              const value = e.target.value;
+              setSearch(value);
+              if (!value.trim()) {
+                setSearchSubmitted('');
+                setPage(1);
+              }
+            }}
             onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-            placeholder="Search descriptions & close notes..."
+            placeholder="Search incident #, descriptions & close notes..."
             className="w-full pl-9 pr-4 py-2.5 bg-white border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>

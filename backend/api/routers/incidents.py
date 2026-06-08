@@ -38,7 +38,10 @@ async def list_incidents(
         params.append(assignment_group)
         idx += 1
     if search:
-        conditions.append(f"(short_description ILIKE ${idx} OR close_notes ILIKE ${idx})")
+        conditions.append(
+            f"(incident_number ILIKE ${idx} OR short_description ILIKE ${idx} "
+            f"OR description ILIKE ${idx} OR close_notes ILIKE ${idx})"
+        )
         params.append(f"%{search}%")
         idx += 1
 
