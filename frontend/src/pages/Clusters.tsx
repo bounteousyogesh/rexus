@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { ChevronLeft, ChevronRight, X, Layers } from 'lucide-react';
-import { api, type Cluster, type PaginatedResponse, type Playbook, type Incident } from '../api';
+import { api } from '../api';
+import type { Cluster, Incident, PaginatedResponse, Playbook } from '../types';
 
 // CQ-004: Proper type for cluster detail (extends Cluster with additional fields)
 interface ClusterDetail extends Cluster {

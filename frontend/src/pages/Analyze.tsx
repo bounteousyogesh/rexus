@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
-import { BASE } from '../api';
+import { BASE, api } from '../api';
+import type { AnalyzeResult, KbArticle } from '../types';
 import { KbArticlePdfViewer } from '../components/KbArticlePdfViewer';
 import { Zap, Loader2, Upload, ChevronDown, BookOpen, AlertCircle, Copy, Check, Mic, MicOff, Send, MessageSquare, Search } from 'lucide-react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { api, type AnalyzeResult, type KbArticle } from '../api';
 
 type Step = 'idle' | 'fetching' | 'parsing' | 'embedding' | 'searching' | 'playbooks' | 'done';
 

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { authApi, type SSOConfig } from '../api';
+import { authApi } from '../api';
+import type { SSOConfig } from '../types';
 import { useAuth, LOGGED_OUT_KEY } from '../contexts/AuthContext';
 
 // ── PKCE Helpers ──────────────────────────────────────────────────────────────

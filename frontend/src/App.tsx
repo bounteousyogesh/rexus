@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Search, BarChart3, Layers, Activity, Zap, RefreshCw, Shield, LogOut, KeyRound } from 'lucide-react';
+import { Search, BarChart3, Layers, Activity, Zap, Shield, LogOut, KeyRound, Wrench } from 'lucide-react';
 import { AuthProvider, useAuth, LOGGED_OUT_KEY } from './contexts/AuthContext';
-import { authApi, type SSOConfig } from './api';
+import { authApi } from './api';
+import type { SSOConfig } from './types';
 import LoginPage from './pages/Login';
 import LoginDevPage from './pages/Login_Dev';
 import { isLocalDevelopment } from './env';
@@ -13,17 +14,27 @@ import ClustersPage from './pages/Clusters';
 import SearchPage from './pages/SearchPage';
 import SyncPage from './pages/SyncPage';
 import AdminPage from './pages/Admin';
+import MaintenancePage, { type MaintenanceJobId } from './pages/MaintenancePage';
+import KbMappingRefreshPage from './pages/KbMappingRefreshPage';
 import ChangePassword from './pages/ChangePassword';
 
-type Page = 'dashboard' | 'analyze' | 'sync' | 'incidents' | 'clusters' | 'search' | 'admin';
+type Page = 'dashboard' | 'analyze' | 'incidents' | 'clusters' | 'search' | 'admin' | 'maintenance' | `maintenance-${MaintenanceJobId}`;
+
+function maintenanceJobToPage(id: MaintenanceJobId): Page {
+  return `maintenance-${id}`;
+}
+
+function isNavActive(page: Page, navId: Page): boolean {
+  return navId === 'maintenance' ? page.startsWith('maintenance') : page === navId;
+}
 
 const NAV: { id: Page; label: string; icon: React.ReactNode; adminOnly?: boolean }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: <BarChart3 size={18} /> },
   { id: 'analyze', label: 'Analyze', icon: <Zap size={18} /> },
-  { id: 'sync', label: 'SN Sync', icon: <RefreshCw size={18} /> },
   { id: 'incidents', label: 'Incidents', icon: <Activity size={18} /> },
   { id: 'clusters', label: 'Clusters', icon: <Layers size={18} /> },
   { id: 'search', label: 'Search', icon: <Search size={18} /> },
+  { id: 'maintenance', label: 'Maintenance', icon: <Wrench size={18} /> },
   { id: 'admin', label: 'Admin', icon: <Shield size={18} />, adminOnly: true },
 ];
 
@@ -53,7 +64,7 @@ function AuthenticatedApp() {
               key={item.id}
               onClick={() => setPage(item.id)}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                page === item.id
+                 isNavActive(page, item.id)
                   ? 'bg-slate-700 text-white'
                   : 'text-slate-400 hover:text-white hover:bg-slate-800'
               }`}
@@ -91,10 +102,18 @@ function AuthenticatedApp() {
       <main className="flex-1 overflow-auto">
         {page === 'dashboard' && <DashboardPage />}
         {page === 'analyze' && <AnalyzePage />}
-        {page === 'sync' && <SyncPage />}
         {page === 'incidents' && <IncidentsPage />}
         {page === 'clusters' && <ClustersPage />}
         {page === 'search' && <SearchPage />}
+        {page === 'maintenance' && (
+          <MaintenancePage onOpenJob={(id) => setPage(maintenanceJobToPage(id))} />
+        )}
+        {page === 'maintenance-sn-sync' && (
+          <SyncPage onBack={() => setPage('maintenance')} />
+        )}
+        {page === 'maintenance-kb-mapping-refresh' && (
+          <KbMappingRefreshPage onBack={() => setPage('maintenance')} />
+        )}
         {page === 'admin' && <AdminPage />}
       </main>
 

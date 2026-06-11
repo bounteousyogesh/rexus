@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Activity, Layers, BookOpen, Database, AlertCircle } from 'lucide-react';
-import { api, type Analytics } from '../api';
+import { api } from '../api';
+import type { Analytics } from '../types';
 
 export default function DashboardPage() {
   const [data, setData] = useState<Analytics | null>(null);

@@ -23,6 +23,7 @@ erDiagram
         text embedding_text "Cleaned text for AI"
         vector embedding "1536-dim vector (pgvector)"
         varchar split_group "training, analyzed, wave_N"
+        boolean has_kb_article "NULL=unchecked, TRUE=has KB, FALSE=checked none"
         timestamp opened_at
         timestamp resolved_at
     }
@@ -218,6 +219,7 @@ flowchart LR
 | rexus_incidents_v3 | `problem_id_idx` | B-tree | Problem suggestion scoring | 001 |
 | rexus_incidents_v3 | `cmdb_ci_idx` | B-tree | CMDB family filtering | 001 |
 | rexus_incidents_v3 | `opened_at_idx` | B-tree | Chronological ordering | 001 |
+| rexus_incidents_v3 | `idx_incidents_has_kb_article_null` | B-tree (partial) | Not-synced KB status preview filter | 010 |
 | rexus_analysis_log | `created_idx` | B-tree | Analysis history queries | 001 |
 | rexus_analysis_log | `idx_analysis_log_incident` | B-tree (partial) | Per-incident analysis lookups | 004 |
 | rexus_feedback | `idx_feedback_incident` | B-tree (partial) | Per-incident feedback lookups | 004 |

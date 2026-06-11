@@ -667,7 +667,8 @@ async def insert_kb_mappings(conn, incident_number: str, kb_list: list[dict]) ->
         return 0
 
     inc = incident_number.strip().upper()
-    inserted = 0
+    numbers: list[str] = []
+    descriptions: list[str | None] = []
     for ka in kb_list:
         if not isinstance(ka, dict):
             continue
@@ -683,25 +684,21 @@ async def insert_kb_mappings(conn, incident_number: str, kb_list: list[dict]) ->
         if not number:
             continue
         desc = ka.get("short_description") or ka.get("kb_description") or _kb_description_from_item(ka)
+        numbers.append(number)
+        descriptions.append(desc)
 
-        exists = await conn.fetchval(
-            """SELECT 1 FROM rexus_kb_article_incident_mapping
-               WHERE UPPER(TRIM(incident_number)) = $1
-                 AND UPPER(TRIM(knowledge_article_number)) = $2
-               LIMIT 1""",
-            inc,
-            number,
-        )
-        if exists:
-            continue
+        if not numbers:
+        return 0
 
-        await conn.execute(
-            """INSERT INTO rexus_kb_article_incident_mapping
-                   (incident_number, knowledge_article_number, kb_description)
-               VALUES ($1, $2, $3)""",
-            inc,
-            number,
-            desc,
-        )
-        inserted += 1
-    return inserted
+        rows = await conn.fetch(
+        """INSERT INTO rexus_kb_article_incident_mapping
+               (incident_number, knowledge_article_number, kb_description)
+           SELECT $1, ka_num, ka_desc
+           FROM unnest($2::text[], $3::text[]) AS t(ka_num, ka_desc)
+           ON CONFLICT (incident_number, knowledge_article_number) DO NOTHING
+           RETURNING 1""",
+        inc,
+        numbers,
+        descriptions,
+    )
+    return len(rows)

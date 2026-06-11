@@ -28,6 +28,30 @@ OPENAI_TIMEOUT = float(os.getenv("REXUS_OPENAI_TIMEOUT", "60"))
 DB_TIMEOUT = float(os.getenv("REXUS_DB_TIMEOUT", "10"))
 
 
+def _maintenance_auth_headers() -> dict:
+    """Headers for POST /sync/import and /kb-mappings/refresh (admin JWT or API key)."""
+    headers: dict = {}
+    admin_key = os.getenv("REXUS_ADMIN_KEY")
+    if admin_key:
+        headers["X-Admin-Key"] = admin_key
+        return headers
+
+    password = os.getenv("REXUS_ADMIN_PASSWORD", "RexUS@2026!")
+    try:
+        with httpx.Client(base_url=BASE_URL, timeout=DB_TIMEOUT) as c:
+            response = c.post(
+                "/api/v1/auth/login",
+                json={"username": "admin", "password": password},
+            )
+            if response.status_code == 200:
+                token = response.json().get("token")
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+    except Exception:
+        pass
+    return headers
+
+
 # ---------------------------------------------------------------------------
 # Synchronous httpx client fixture (used by the majority of tests)
 # ---------------------------------------------------------------------------
@@ -37,9 +61,13 @@ def client() -> httpx.Client:
     """
     A persistent httpx.Client for the entire test session.
     Using session scope keeps connection pooling efficient and avoids per-test
-    TCP handshake overhead.
+    TCP handshake overhead. Includes admin auth for maintenance POST endpoints.
     """
-    with httpx.Client(base_url=BASE_URL, timeout=DB_TIMEOUT) as c:
+    with httpx.Client(
+        base_url=BASE_URL,
+        timeout=DB_TIMEOUT,
+        headers=_maintenance_auth_headers(),
+    ) as c:
         yield c
 
 

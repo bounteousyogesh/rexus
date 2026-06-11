@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Search, Loader2 } from 'lucide-react';
-import { api, type SearchResult } from '../api';
+import { api } from '../api';
+import type { SearchResult } from '../types';
 
 export default function SearchPage() {
   const [query, setQuery] = useState('');

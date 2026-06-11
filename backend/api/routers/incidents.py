@@ -54,7 +54,7 @@ async def list_incidents(
         rows = await conn.fetch(
             f"""SELECT id, incident_number, short_description, category, subcategory,
                        priority, state, cmdb_ci, assignment_group, close_notes,
-                       opened_at, resolved_at, business_duration
+                       opened_at, resolved_at, business_duration, has_kb_article
                 FROM rexus_incidents_v3 {where}
                 ORDER BY opened_at DESC NULLS LAST
                 LIMIT ${idx} OFFSET ${idx + 1}""",
@@ -85,7 +85,7 @@ async def get_incident(incident_number: str):
                       assignment_group, assigned_to, cmdb_ci, business_service,
                       close_notes, opened_at, resolved_at, closed_at,
                       business_duration, u_jira_number, u_order_number,
-                      caller_id, location, company
+                      caller_id, location, company, has_kb_article
                FROM rexus_incidents_v3 WHERE incident_number = $1""",
             incident_number,
         )
