@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Search, ChevronLeft, ChevronRight, X } from 'lucide-react';
-import { api, type Incident, type PaginatedResponse } from '../api';
+import { api } from '../api';
+import type { Incident, PaginatedResponse } from '../types';
 
 export default function IncidentsPage() {
   const [data, setData] = useState<PaginatedResponse<Incident> | null>(null);

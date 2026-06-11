@@ -17,17 +17,19 @@ import asyncio
 import logging
 from datetime import datetime, date
 from pathlib import Path
-from typing import Annotated
-
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Query, HTTPException, Request
+from fastapi import APIRouter, Query, HTTPException, Request, Depends
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from backend.api.database import get_pool
 from backend.api.utils.llm_provider import embed_text as _embed_text_fn, get_embed_model
 from backend.api.utils.token_tracker import track_usage
 from backend.api.utils.text_cleaning import clean_for_embedding as _shared_clean_for_embedding
+from backend.api.auth import require_admin_or_api_key
+from backend.api.utils.incident_groups import group_incidents_by_period
 from backend.api.utils.kb_articles import extract_kb_articles, insert_kb_mappings
+from backend.api.utils.sync_constants import IncidentNumber, KB_MAPPING_REFRESH_MAX, SYNC_IMPORT_MAX
+from backend.services.servicenow_client import ServiceNowClient
 
 logger = logging.getLogger(__name__)
 
@@ -37,17 +39,6 @@ limiter = Limiter(key_func=get_remote_address)
 # SEC-015: Configurable maximum number of delta incidents fetched from ServiceNow.
 # Prevents runaway memory consumption on large backlogs.
 _SYNC_DELTA_MAX = int(os.getenv("SYNC_DELTA_MAX", "2000"))
-
-# SEC-020: Max incident numbers per POST /sync/import (env: SYNC_IMPORT_MAX_INCIDENTS).
-_SYNC_IMPORT_MAX = int(os.getenv("SYNC_IMPORT_MAX_INCIDENTS", "1000"))
-
-
-
-def _get_sn_client():
-    """Lazy-load ServiceNow client."""
-    from backend.services.servicenow_client import ServiceNowClient
-    return ServiceNowClient()
-
 
 # ── CSV catalog fallback ──────────────────────────────────────────
 # Used when the DT Search API is not available (e.g., staging/prod
@@ -304,7 +295,7 @@ async def sync_status():
         db_embedded = await conn.fetchval("SELECT COUNT(*) FROM rexus_incidents_v3 WHERE embedding IS NOT NULL")
 
     try:
-        client = _get_sn_client()
+        client = ServiceNowClient()
         # Try DT Search API first, fall back to Table API count
         try:
             closed = await asyncio.to_thread(lambda: client.search_incidents(incident_state="7"))
@@ -332,7 +323,8 @@ async def sync_status():
             "date_min": catalog_min,
             "date_max": catalog_max,
         },
-        "import_max_incidents": _SYNC_IMPORT_MAX,
+        "import_max_incidents": SYNC_IMPORT_MAX,
+        "refresh_max_incidents": KB_MAPPING_REFRESH_MAX,
     }
 
 
@@ -360,7 +352,7 @@ async def sync_delta(
     if not end_date:
         end_date = datetime.now().strftime("%Y-%m-%d")
 
-    client = _get_sn_client()
+    client = ServiceNowClient()
 
     filters = {}
     if category:
@@ -445,29 +437,7 @@ async def sync_delta(
     # Filter out ones we already have
     delta = [inc for inc in sn_list if inc["incident_number"] not in existing_set]
 
-    # Group by month, week, and day
-    months: dict[str, list] = {}
-    weeks: dict[str, list] = {}
-    days: dict[str, list] = {}
-    for inc in delta:
-        opened = inc.get("opened_at", "")
-        if opened:
-            try:
-                dt = datetime.strptime(opened[:10], "%Y-%m-%d")
-                month_key = dt.strftime("%Y-%m")
-                week_key = f"{dt.year}-W{dt.isocalendar()[1]:02d}"
-                day_key = dt.strftime("%Y-%m-%d")
-
-                months.setdefault(month_key, []).append(inc)
-                weeks.setdefault(week_key, []).append(inc)
-                days.setdefault(day_key, []).append(inc)
-            except ValueError:
-                pass
-
-    # Sort reverse chronological
-    sorted_months = sorted(months.items(), key=lambda x: x[0], reverse=True)
-    sorted_weeks = sorted(weeks.items(), key=lambda x: x[0], reverse=True)
-    sorted_days = sorted(days.items(), key=lambda x: x[0], reverse=True)
+    grouped = group_incidents_by_period(delta)
 
     catalog_min, catalog_max = _catalog_date_bounds()
     message = None
@@ -492,38 +462,34 @@ async def sync_delta(
         "catalog_date_min": catalog_min,
         "catalog_date_max": catalog_max,
         "date_range": {"start": start_date, "end": end_date, "closed_only": closed_only},
-        "by_month": [{"month": m, "count": len(incs), "incidents": incs} for m, incs in sorted_months],
-        "by_week": [{"week": w, "count": len(incs), "incidents": incs} for w, incs in sorted_weeks],
-        "by_day": [{"day": d, "count": len(incs), "incidents": incs} for d, incs in sorted_days],
+        **grouped,
     }
 
 
-# SEC-020 FIX: Constrain incident number format (Pydantic v2 Field validators)
-IncidentNumber = Annotated[str, Field(min_length=3, max_length=20, pattern=r'^INC\d+$')]
-
-
 class ImportRequest(BaseModel):
-    incident_numbers: list[IncidentNumber] = Field(..., max_length=_SYNC_IMPORT_MAX)
+    incident_numbers: list[IncidentNumber] = Field(..., max_length=SYNC_IMPORT_MAX)
 
 
 @router.post("/sync/import")
 @limiter.limit(os.getenv("RATE_LIMIT_SYNC", "5/minute"))
-async def sync_import(request: Request, req: ImportRequest):
+async def sync_import(
+    request: Request,
+    req: ImportRequest,
+    _admin: dict = Depends(require_admin_or_api_key),
+):
     """
     Import specific incidents from ServiceNow into our database.
     Uses the custom detailed API (with KB articles), generates embeddings,
     inserts into v3 table, and inserts KB mappings into rexus_kb_article_incident_mapping.
 
-    SEC-013: This endpoint modifies the knowledge base. In production it should
-    be protected by an admin role or API key (e.g. via a FastAPI dependency).
-    Currently relies on network-level access controls (internal only).
+    Requires admin JWT or X-Admin-Key matching REXUS_ADMIN_KEY.
 
     ARCH-009: Progress is tracked per-incident and returned in the response.
     """
     if not req.incident_numbers:
         raise HTTPException(400, "No incidents to import")
 
-    sn_client = _get_sn_client()
+    sn_client = ServiceNowClient()
     embed_model = get_embed_model()
     pool = await get_pool()
 
@@ -564,6 +530,7 @@ async def sync_import(request: Request, req: ImportRequest):
                               endpoint="/sync/import", incident_number=inc_num)
 
             kb_list = extract_kb_articles(data)
+            has_kb_article = bool(kb_list)
             mapping_inc = (flat.get("number") or inc_num).strip().upper()
             if not kb_list:
                 logger.info(
@@ -595,14 +562,15 @@ async def sync_import(request: Request, req: ImportRequest):
                         reassignment_count, reopen_count, made_sla, escalation,
                         work_notes, comments,
                         opened_at, resolved_at, closed_at,
-                        split_group, embedding_text, embedding
+                        has_kb_article, split_group, embedding_text, embedding
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
                         $17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,
                         $32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,
-                        $46,$47,$48,
-                        'synced', $49, $50
-                    ) ON CONFLICT (incident_number) DO NOTHING
+                         $46,$47,$48,$49,
+                        'synced', $50, $51
+                    ) ON CONFLICT (incident_number) DO UPDATE SET
+                        has_kb_article = EXCLUDED.has_kb_article
                 """,
                     flat["number"], flat["sys_id"], flat["short_description"], flat["description"],
                     flat["category"], flat["subcategory"], flat["priority"], flat["severity"],
@@ -617,6 +585,7 @@ async def sync_import(request: Request, req: ImportRequest):
                     flat["reassignment_count"], flat["reopen_count"], flat["made_sla"], flat["escalation"],
                     flat["work_notes"], flat["comments"],
                     flat["opened_at"], flat["resolved_at"], flat["closed_at"],
+                    has_kb_article,
                     embedding_text, embedding_str,
                 )
 

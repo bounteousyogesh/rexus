@@ -17,7 +17,7 @@ Design note:
 import pytest
 import httpx
 
-from backend.api.routers.sync import _SYNC_IMPORT_MAX
+from backend.api.utils.sync_constants import SYNC_IMPORT_MAX
 
 
 SYNC_STATUS_URL = "/api/v1/sync/status"
@@ -198,14 +198,14 @@ def test_sync_import_rejects_more_than_max_incidents(client: httpx.Client):
     POST /sync/import with > SYNC_IMPORT_MAX_INCIDENTS must return 422.
     SEC-020: ImportRequest enforces configurable max per batch.
     """
-    too_many = [f"INC{i:07d}" for i in range(1, _SYNC_IMPORT_MAX + 2)]
+    too_many = [f"INC{i:07d}" for i in range(1, SYNC_IMPORT_MAX + 2)]
     response = client.post(SYNC_IMPORT_URL, json={"incident_numbers": too_many})
     assert response.status_code == 422, (
-        f"Expected 422 for >{_SYNC_IMPORT_MAX} incidents, got {response.status_code}"
+        f"Expected 422 for >{SYNC_IMPORT_MAX} incidents, got {response.status_code}"
     )
     body = response.json()
     detail_text = str(body).lower()
-    assert "max" in detail_text or "limit" in detail_text or str(_SYNC_IMPORT_MAX) in detail_text, (
+    assert "max" in detail_text or "limit" in detail_text or str(SYNC_IMPORT_MAX) in detail_text, (
         f"422 error should mention the import limit, got: {body}"
     )
 

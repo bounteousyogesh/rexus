@@ -328,8 +328,37 @@ def test_feedback_with_maximum_boundary_text_is_not_rejected(client: httpx.Clien
 
 def test_sync_import_batch_size_cap_is_enforced_above_max(client: httpx.Client):
     """SEC-020: POST /sync/import above SYNC_IMPORT_MAX_INCIDENTS must be rejected with 422."""
-    from backend.api.routers.sync import _SYNC_IMPORT_MAX
+    from backend.api.utils.sync_constants import SYNC_IMPORT_MAX
 
-    payload = {"incident_numbers": [f"INC{i:07d}" for i in range(1, _SYNC_IMPORT_MAX + 2)]}
+    payload = {"incident_numbers": [f"INC{i:07d}" for i in range(1, SYNC_IMPORT_MAX + 2)]}
     response = client.post("/api/v1/sync/import", json=payload)
     assert response.status_code == 422
+
+
+# ===========================================================================
+# Maintenance endpoint auth (admin JWT or X-Admin-Key)
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_require_admin_or_api_key_accepts_matching_api_key(monkeypatch):
+    from unittest.mock import MagicMock
+    from backend.api.auth import require_admin_or_api_key
+
+    monkeypatch.setattr("backend.api.auth._ADMIN_KEY", "test-secret-key")
+    result = await require_admin_or_api_key(MagicMock(), x_admin_key="test-secret-key")
+    assert result["role"] == "admin"
+    assert result["via"] == "api_key"
+
+
+@pytest.mark.asyncio
+async def test_require_admin_or_api_key_rejects_missing_auth(monkeypatch):
+    from unittest.mock import MagicMock
+    from fastapi import HTTPException
+    from backend.api.auth import require_admin_or_api_key
+
+    monkeypatch.setattr("backend.api.auth._ADMIN_KEY", "test-secret-key")
+    request = MagicMock()
+    request.headers.get.return_value = None
+    with pytest.raises(HTTPException) as exc:
+        await require_admin_or_api_key(request, x_admin_key=None)
+    assert exc.value.status_code == 401

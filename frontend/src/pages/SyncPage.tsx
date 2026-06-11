@@ -1,71 +1,27 @@
-import { useEffect, useState, useCallback } from 'react';
-import { RefreshCw, Download, CheckCircle2, AlertCircle, Loader2, Database, Cloud } from 'lucide-react';
-// ENH-012: Import BASE from api.ts instead of duplicating the constant here
-import { BASE } from '../api';
+﻿import { useEffect, useState, useCallback } from 'react';
+import { RefreshCw, Download, CheckCircle2, AlertCircle, Loader2, Database, Cloud, ArrowLeft } from 'lucide-react';
+import { api } from '../api';
+import type {
+  SyncDelta,
+  SyncDeltaGroup,
+  SyncImportResult,
+  SyncIncident,
+  SyncStatus,
+} from '../types';
 
 // CQ-003: Proper interfaces instead of `any`
-interface SyncIncident {
-  incident_number: string;
-  short_description: string;
-  opened_at: string;
-  cmdb_ci: string;
-  category: string;
+interface SyncPageProps {
+  onBack?: () => void;
 }
 
-interface DeltaGroup {
-  month?: string;
-  week?: string;
-  day?: string;
-  count: number;
-  incidents: SyncIncident[];
-}
-
-interface SyncStatus {
-  database: {
-    total_incidents: number;
-    embedded: number;
-    latest_incident_date: string | null;
-  };
-  servicenow: {
-    closed_incidents: number | string;
-  };
-  catalog?: {
-    path: string;
-    available: boolean;
-    date_min: string | null;
-    date_max: string | null;
-  };
-  import_max_incidents?: number;
-}
-
-interface SyncDelta {
-  total_delta: number;
-  total_discovered: number;
-  already_in_db: number;
-  source: string;
-  message?: string | null;
-  catalog_date_min?: string | null;
-  catalog_date_max?: string | null;
-  by_month: DeltaGroup[];
-  by_week: DeltaGroup[];
-  by_day: DeltaGroup[];
-}
-
-interface ImportResult {
-  incident: string;
-  status: 'imported' | 'error' | 'skipped_not_closed' | 'not_found';
-  error?: string;
-  state?: string;
-}
-
-export default function SyncPage() {
+export default function SyncPage({ onBack }: SyncPageProps) {
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [delta, setDelta] = useState<SyncDelta | null>(null);
   const [loading, setLoading] = useState(false);
   /** Group label (e.g. "2025-03") or "__all__" while that import is in flight */
   const [importingKey, setImportingKey] = useState<string | null>(null);
-  const [importResults, setImportResults] = useState<ImportResult[]>([]);
+  const [importResults, setImportResults] = useState<SyncImportResult[]>([]);
   const [groupBy, setGroupBy] = useState<'day' | 'week' | 'month'>('month');
   const [startDate, setStartDate] = useState(() => {
     const d = new Date(); d.setMonth(d.getMonth() - 6);
@@ -80,9 +36,7 @@ export default function SyncPage() {
   const checkStatus = useCallback(async () => {
     setStatusError(null);
     try {
-      const res = await fetch(`${BASE}/sync/status`);
-      if (!res.ok) throw new Error(`Status check failed: ${res.status}`);
-      setStatus(await res.json());
+      setStatus(await api.syncStatus());
     } catch (err) {
       setStatusError(err instanceof Error ? err.message : 'Failed to load sync status');
     }
@@ -92,15 +46,13 @@ export default function SyncPage() {
     if (!opts?.silent) setLoading(true);
     setDeltaError(null);
     try {
-      const params = new URLSearchParams();
-      params.set('start_date', startDate);
-      params.set('end_date', endDate);
-      params.set('closed_only', String(closedOnly));
-      if (filterCategory) params.set('category', filterCategory);
-      if (filterCmdb) params.set('cmdb_ci', filterCmdb);
-      const res = await fetch(`${BASE}/sync/delta?${params}`);
-      if (!res.ok) throw new Error(`Delta check failed: ${res.status}`);
-      setDelta(await res.json());
+      setDelta(await api.syncDelta({
+        start_date: startDate,
+        end_date: endDate,
+        closed_only: closedOnly,
+        category: filterCategory || undefined,
+        cmdb_ci: filterCmdb || undefined,
+      }));
     } catch (err) {
       setDeltaError(err instanceof Error ? err.message : 'Failed to check delta');
     } finally {
@@ -117,14 +69,8 @@ export default function SyncPage() {
     const numbers = incidents.map(i => i.incident_number);
     setImportingKey(key);
     try {
-      const res = await fetch(`${BASE}/sync/import`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ incident_numbers: numbers }),
-      });
-      if (!res.ok) throw new Error(`Import failed: ${res.status}`);
-      const data = await res.json();
-      setImportResults(prev => [...prev, ...(data.results as ImportResult[])]);
+      const data = await api.syncImport(numbers);
+      setImportResults(prev => [...prev, ...data.results]);
     } catch (err) {
       setDeltaError(err instanceof Error ? err.message : 'Import failed');
     } finally {
@@ -135,16 +81,27 @@ export default function SyncPage() {
 
   useEffect(() => { checkStatus(); }, [checkStatus]);
 
-  const groups: DeltaGroup[] = delta ? (groupBy === 'month' ? delta.by_month : groupBy === 'week' ? delta.by_week : delta.by_day) : [];
+  const groups: SyncDeltaGroup[] = delta ? (groupBy === 'month' ? delta.by_month : groupBy === 'week' ? delta.by_week : delta.by_day) : [];
   const importBatchSize = status?.import_max_incidents ?? 1000;
 
   return (
     <div className="p-6 space-y-4 max-w-[1000px]">
-      <div>
-        <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-          <RefreshCw size={22} /> ServiceNow Sync
-        </h2>
-        <p className="text-sm text-slate-500">Import closed incidents from ServiceNow into the knowledge base</p>
+      <div className="flex items-start gap-3">
+        {onBack && (
+          <button
+            onClick={onBack}
+            className="mt-1 p-1.5 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors"
+            title="Back to Maintenance"
+          >
+            <ArrowLeft size={18} />
+          </button>
+        )}
+        <div>
+          <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+            <RefreshCw size={22} /> ServiceNow Sync
+          </h2>
+          <p className="text-sm text-slate-500">Import closed incidents from ServiceNow into the knowledge base</p>
+        </div>
       </div>
 
       {/* CQ-008: Show error if status fetch failed */}
@@ -299,32 +256,13 @@ export default function SyncPage() {
                 </p>
                 <button
                   onClick={async () => {
-                    const allIncs = groups.flatMap((g: DeltaGroup) => g.incidents);
+                    const allIncs = groups.flatMap((g) => g.incidents);
                     setImportingKey('__all__');
                     try {
-                      if (allIncs.length > importBatchSize) {
-                        for (let i = 0; i < allIncs.length; i += importBatchSize) {
-                          const batch = allIncs.slice(i, i + importBatchSize);
-                          const numbers = batch.map(inc => inc.incident_number);
-                          const res = await fetch(`${BASE}/sync/import`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ incident_numbers: numbers }),
-                          });
-                          if (!res.ok) throw new Error(`Import failed: ${res.status}`);
-                          const data = await res.json();
-                          setImportResults(prev => [...prev, ...(data.results as ImportResult[])]);
-                        }
-                      } else {
-                        const numbers = allIncs.map(inc => inc.incident_number);
-                        const res = await fetch(`${BASE}/sync/import`, {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ incident_numbers: numbers }),
-                        });
-                        if (!res.ok) throw new Error(`Import failed: ${res.status}`);
-                        const data = await res.json();
-                        setImportResults(prev => [...prev, ...(data.results as ImportResult[])]);
+                      for (let i = 0; i < allIncs.length; i += importBatchSize) {
+                        const batch = allIncs.slice(i, i + importBatchSize);
+                        const data = await api.syncImport(batch.map((inc) => inc.incident_number));
+                        setImportResults((prev) => [...prev, ...data.results]);
                       }
                     } catch (err) {
                       setDeltaError(err instanceof Error ? err.message : 'Import failed');
@@ -344,7 +282,7 @@ export default function SyncPage() {
                 </button>
               </div>
 
-              {groups.map((group: DeltaGroup) => {
+              {groups.map((group) => {
                 const label = group.day || group.week || group.month || '';
                 const isImportingThisGroup = importingKey === label;
                 const imported = group.incidents.filter((i: SyncIncident) =>

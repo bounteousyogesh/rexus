@@ -1,4 +1,50 @@
-// ENH-012: Export BASE so other modules can import it instead of duplicating the constant
+import type {
+  Analytics,
+  AnalyzeResult,
+  AuthUser,
+  KbMappingRefreshPreview,
+  KbMappingRefreshResponse,
+  Cluster,
+  Incident,
+  KbArticleFilter,
+  LoginResponse,
+  PaginatedResponse,
+  Playbook,
+  SearchResult,
+  SSOConfig,
+  SyncDelta,
+  SyncImportResponse,
+  SyncStatus,
+} from './types';
+
+export type {
+  Analytics,
+  AnalyzeResult,
+  AuthUser,
+  KbMappingRefreshGroup,
+  KbMappingRefreshIncident,
+  KbMappingRefreshPreview,
+  KbMappingRefreshResponse,
+  KbMappingRefreshResult,
+  KbMappingRefreshSummary,
+  Cluster,
+  Incident,
+  KbArticleFilter,
+  KbArticle,
+  LoginResponse,
+  PaginatedResponse,
+  Playbook,
+  SearchResult,
+  SSOConfig,
+  SyncDelta,
+  SyncDeltaGroup,
+  SyncImportResponse,
+  SyncImportResult,
+  SyncImportStatus,
+  SyncIncident,
+  SyncStatus,
+} from './types';
+
 export const BASE = '/api/v1';
 
 function getAuthToken(): string | null {
@@ -49,150 +95,6 @@ export async function del<T>(path: string): Promise<T> {
   return res.json();
 }
 
-// Types
-export interface Incident {
-  id: number;
-  incident_number: string;
-  short_description: string;
-  description?: string;
-  category?: string;
-  subcategory?: string;
-  priority?: string;
-  state?: string;
-  cmdb_ci?: string;
-  assignment_group?: string;
-  assigned_to?: string;
-  close_notes?: string;
-  close_code?: string;
-  business_duration?: string;
-  opened_at?: string;
-  resolved_at?: string;
-  closed_at?: string;
-  similarity_score?: number;
-  cluster_id?: number;
-  cluster?: { id: number; cluster_name: string; similarity_to_centroid: number };
-}
-
-export interface KbArticle {
-  sys_id: string;
-  number: string;
-  short_description: string;
-  kb_category_display?: string;
-  attached_on?: string;
-  url?: string;
-  has_pdf?: boolean;
-  /** Set on analyze response when PDF was loaded once server-side. */
-  pdf_base64?: string;
-  kb_title?: string;
-  source?: string;
-  /** Similar-incident match % used to select this KB (0–100). */
-  match_percent?: number;
-  matched_via_incident?: string;
-}
-
-export interface Cluster {
-  id: number;
-  cluster_name: string;
-  cluster_description?: string;
-  incident_count: number;
-  dominant_category?: string;
-  avg_resolution_hours?: number;
-  avg_internal_similarity?: number;
-  status: string;
-  created_at: string;
-}
-
-export interface Playbook {
-  id: number;
-  title: string;
-  content: string;
-  cluster_id?: number;
-  cluster_name?: string;
-  source_incident_count?: number;
-  grounding_score?: number;
-  status: string;
-}
-
-export interface PaginatedResponse<T> {
-  total: number;
-  page: number;
-  page_size: number;
-  pages: number;
-  items: T[];
-}
-
-export interface AnalyzeResult {
-  analysis_id?: number;
-  cleaned_issue: string;
-  confidence_score: number;
-  incident_exists: boolean;
-  incident_number?: string;
-  match_count: number;
-  similar_incidents: Incident[];
-  dominant_cluster?: {
-    id: number;
-    cluster_name: string;
-    cluster_description?: string;
-    incident_count: number;
-    dominant_category?: string;
-    avg_resolution_hours?: number;
-    avg_internal_similarity?: number;
-  };
-  focused_playbook: {
-    playbook: string;
-    notes: string;
-    grounding_score: number;
-    source_incident_count: number;
-    total_similar: number;
-    top_problem?: { id: string; count: number };
-    secondary_problem?: { id: string; count: number };
-    other_problems: string[];
-    order_ids: string[];
-    jira_tickets: string[];
-    kb_articles?: KbArticle[];
-    kb_source?: string;
-    kb_source_incident?: string;
-    kb_match_percent?: number;
-    /** Set when playbook text is summarized from a linked knowledge article. */
-    playbook_source?: 'knowledge_article' | 'similar_incidents';
-  };
-  resolution_patterns: {
-    incident_number: string;
-    close_notes: string;
-    similarity: number;
-  }[];
-}
-
-export interface SearchResult {
-  query: string;
-  threshold: number;
-  count: number;
-  results: {
-    incident_id: number;
-    incident_number: string;
-    short_description: string;
-    close_notes?: string;
-    similarity_score: number;
-    cluster_id?: number;
-  }[];
-}
-
-export interface Analytics {
-  overview: {
-    total_incidents: number;
-    total_clusters: number;
-    total_playbooks: number;
-    embedded_incidents: number;
-  };
-  categories: { category: string; count: number }[];
-  top_cmdb_cis: { cmdb_ci: string; count: number }[];
-  top_assignment_groups: { assignment_group: string; count: number }[];
-  resolution_time: { avg_hours: number; median_hours: number; min_hours: number; max_hours: number };
-  top_clusters: { id: number; cluster_name: string; incident_count: number; avg_resolution_hours?: number }[];
-  monthly_trend: { month: string; count: number }[];
-  states: { state: string; count: number }[];
-}
-
 // API methods
 export const api = {
   health: () => fetch('/health').then(r => { if (!r.ok) throw new Error(`API error: ${r.status}`); return r.json() as Promise<{ status: string; database: string; incidents_count: number }>; }),
@@ -235,23 +137,18 @@ export const api = {
   search: (q: string, limit = 10, threshold = 0.4) =>
     get<SearchResult>(`/search?q=${encodeURIComponent(q)}&limit=${limit}&threshold=${threshold}`),
 
-  // Enhanced analyze — accepts ServiceNow JSON
   analyze: (ticketJson: Record<string, unknown>, limit = 10) =>
     post<AnalyzeResult>('/analyze', { ticket_json: ticketJson, limit, threshold: 0.4 }),
 
-  // Analyze from plain text
   analyzeText: (text: string, limit = 10) =>
     post<AnalyzeResult>('/analyze/text', { text, limit, threshold: 0.4 }),
 
-  // Fetch incident from ServiceNow (preview before analysis)
   fetchIncident: (incidentNumber: string) =>
     get<Record<string, unknown>>(`/fetch-incident/${encodeURIComponent(incidentNumber)}`),
 
-  // Analyze by INC number — fetch from ServiceNow and analyze in one step
   analyzeIncident: (incidentNumber: string, limit = 15) =>
     post<AnalyzeResult>(`/analyze/incident/${encodeURIComponent(incidentNumber)}`, { limit, threshold: 0.4 }),
 
-  // Upload PDF → get extracted JSON
   parsePdf: async (file: File): Promise<Record<string, unknown>> => {
     const form = new FormData();
     form.append('file', file);
@@ -262,7 +159,33 @@ export const api = {
 
   analytics: () => get<Analytics>('/analytics'),
 
-  // Wave testing
+  syncStatus: () => get<SyncStatus>('/sync/status'),
+
+  syncDelta: (params: {
+    start_date: string;
+    end_date: string;
+    closed_only: boolean;
+    category?: string;
+    cmdb_ci?: string;
+  }) => {
+    const qs = new URLSearchParams();
+    qs.set('start_date', params.start_date);
+    qs.set('end_date', params.end_date);
+    qs.set('closed_only', String(params.closed_only));
+    if (params.category) qs.set('category', params.category);
+    if (params.cmdb_ci) qs.set('cmdb_ci', params.cmdb_ci);
+    return get<SyncDelta>(`/sync/delta?${qs}`);
+  },
+
+  syncImport: (incident_numbers: string[]) =>
+    post<SyncImportResponse>('/sync/import', { incident_numbers }),
+
+  kbMappingRefreshPreview: (hasKbFilter: KbArticleFilter = 'not_synced') =>
+    get<KbMappingRefreshPreview>(`/kb-mappings/refresh/preview?has_kb_article=${hasKbFilter}`),
+
+  kbMappingRefreshRun: (incident_numbers: string[]) =>
+    post<KbMappingRefreshResponse>('/kb-mappings/refresh', { incident_numbers }),
+
   listWaves: () => get<{ waves: { split_group: string; total: number; from_date: string; to_date: string; with_problem: number; with_notes: number }[] }>('/waves'),
 
   listWaveIncidents: (wave: string, page = 1, pageSize = 20) =>
@@ -271,7 +194,6 @@ export const api = {
   getTestIncident: (wave: string, incidentNumber: string) =>
     get<{ incident_number: string; wave: string; input: Record<string, unknown>; actual: Record<string, unknown> }>(`/waves/${wave}/test/${incidentNumber}`),
 
-  // Feedback
   submitFeedback: (data: { analysis_id?: number; incident_number?: string; feedback_text: string; feedback_type?: string; input_method?: string; rating?: number }) =>
     post<{ feedback_id: number; status: string }>('/feedback', data),
 
@@ -284,34 +206,6 @@ export const api = {
     return data.text;
   },
 };
-
-// ── Auth Types ────────────────────────────────────────────────────
-
-export interface AuthUser {
-  id: number;
-  username: string;
-  role: string;
-  email?: string;
-  is_active?: boolean;
-  must_change_password?: boolean;
-  created_at?: string;
-  last_login?: string;
-}
-
-export interface LoginResponse {
-  token: string;
-  user: { id: number; username: string; role: string };
-}
-
-export interface SSOConfig {
-  enabled: boolean;
-  client_id?: string;
-  authorize_url?: string;
-  redirect_uri?: string;
-  audience?: string;
-}
-
-// ── Auth API ──────────────────────────────────────────────────────
 
 export const authApi = {
   login: async (username: string, password: string): Promise<LoginResponse> => {

@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { authApi, type AuthUser } from '../api';
+import { authApi } from '../api';
+import type { AuthUser } from '../types';
 
 export default function AdminPage() {
   const [users, setUsers] = useState<AuthUser[]>([]);
