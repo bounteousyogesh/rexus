@@ -10,12 +10,11 @@ import logging
 import os
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query, Request, Depends
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from backend.api.auth import require_admin_or_api_key
 from backend.api.database import get_pool
 from backend.api.utils.incident_groups import group_incidents_by_period
 from backend.api.utils.sync_constants import IncidentNumber, KB_MAPPING_REFRESH_MAX
@@ -85,13 +84,10 @@ async def kb_mapping_refresh_preview(
 async def kb_mapping_refresh(
     request: Request,
     req: KbMappingRefreshRequest,
-    _admin: dict = Depends(require_admin_or_api_key),
 ):
     """
     Refresh KB article incident mappings from ServiceNow for the given incidents.
     Updates has_kb_article on each row after checking ServiceNow.
-
-    Requires admin JWT or X-Admin-Key matching REXUS_ADMIN_KEY.
     """
     if not req.incident_numbers:
         raise HTTPException(400, "No incidents to refresh")

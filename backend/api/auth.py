@@ -7,11 +7,10 @@ and FastAPI dependencies for protecting endpoints.
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 import bcrypt
 import jwt
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 
 
 # JWT configuration
@@ -83,26 +82,6 @@ async def get_current_user(request: Request) -> dict:
 
 async def require_admin(user: dict = Depends(get_current_user)) -> dict:
     """FastAPI dependency: require the authenticated user to have the admin role."""
-    if user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return user
-
-
-_ADMIN_KEY = os.getenv("REXUS_ADMIN_KEY", "")
-
-
-async def require_admin_or_api_key(
-    request: Request,
-    x_admin_key: Optional[str] = Header(None),
-) -> dict:
-    """
-    FastAPI dependency for maintenance endpoints (sync import, KB mapping refresh).
-    Accepts either a valid admin JWT or X-Admin-Key matching REXUS_ADMIN_KEY.
-    """
-    if _ADMIN_KEY and x_admin_key and secrets.compare_digest(x_admin_key, _ADMIN_KEY):
-        return {"role": "admin", "via": "api_key"}
-
-    user = await get_current_user(request)
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Admin access required")
     return user

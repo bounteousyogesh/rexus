@@ -18,14 +18,13 @@ import logging
 from datetime import datetime, date
 from pathlib import Path
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Query, HTTPException, Request, Depends
+from fastapi import APIRouter, Query, HTTPException, Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from backend.api.database import get_pool
 from backend.api.utils.llm_provider import embed_text as _embed_text_fn, get_embed_model
 from backend.api.utils.token_tracker import track_usage
 from backend.api.utils.text_cleaning import clean_for_embedding as _shared_clean_for_embedding
-from backend.api.auth import require_admin_or_api_key
 from backend.api.utils.incident_groups import group_incidents_by_period
 from backend.api.utils.kb_articles import extract_kb_articles, insert_kb_mappings
 from backend.api.utils.sync_constants import IncidentNumber, KB_MAPPING_REFRESH_MAX, SYNC_IMPORT_MAX
@@ -475,14 +474,11 @@ class ImportRequest(BaseModel):
 async def sync_import(
     request: Request,
     req: ImportRequest,
-    _admin: dict = Depends(require_admin_or_api_key),
 ):
     """
     Import specific incidents from ServiceNow into our database.
     Uses the custom detailed API (with KB articles), generates embeddings,
     inserts into v3 table, and inserts KB mappings into rexus_kb_article_incident_mapping.
-
-    Requires admin JWT or X-Admin-Key matching REXUS_ADMIN_KEY.
 
     ARCH-009: Progress is tracked per-incident and returned in the response.
     """
