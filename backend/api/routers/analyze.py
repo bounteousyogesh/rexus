@@ -11,6 +11,7 @@ Supports:
   POST /parse-pdf     - Upload PDF → extract JSON
 """
 
+import base64
 import os
 import re
 import json
@@ -49,9 +50,13 @@ _HYBRID_KW_MIN = 0.30
 
 # Progressive learning minimum confidence
 _PROGRESSIVE_MIN_CONFIDENCE = float(os.getenv("PROGRESSIVE_MIN_CONFIDENCE", "0.0"))
+
+# KB playbook summary: max chars from extracted PDF text sent to the LLM
+_MAX_KB_TEXT_FOR_SUMMARY = 14_000
+
 from backend.api.database import get_pool
 from backend.api.utils.llm_provider import embed_text, chat_complete, get_chat_model, get_embed_model
-from backend.api.utils.pdf_parser import PDFParser
+from backend.api.utils.pdf_parser import PDFParser, extract_plain_text_from_pdf_bytes
 from backend.api.utils.token_tracker import track_usage
 from backend.api.utils.text_cleaning import clean_for_embedding as _shared_clean_for_embedding
 from backend.api.utils.kb_articles import (
@@ -386,6 +391,17 @@ ABSOLUTE RULES:
     return playbook_prompt, notes_prompt, system_prompt
 
 
+def _compute_grounding_score(evidence_count: int) -> float:
+    """Map count of evidence sources (incidents with notes or KB articles with text) to a score."""
+    if evidence_count >= _GROUNDING_HIGH:
+        return 0.95
+    if evidence_count >= _GROUNDING_MED:
+        return 0.85
+    if evidence_count >= _GROUNDING_LOW:
+        return 0.70
+    return _GROUNDING_FLOOR
+
+
 async def _generate_focused_playbook(
     cleaned_issue: str,
     incident_details: list[dict],
@@ -433,40 +449,41 @@ async def _generate_focused_playbook(
     cluster_count = cluster_info.get("incident_count", 0) if cluster_info else 0
 
     # CQ-005: Use extracted helper to build prompts (SEC-011: sanitizes user data)
-    playbook_prompt, _notes_prompt, system_prompt = _build_playbook_prompts(
+    playbook_prompt, notes_prompt, system_prompt = _build_playbook_prompts(
         cleaned_issue, cluster_name, cluster_count,
         incidents_with_notes, evidence_text, top_problem,
     )
 
     model = get_chat_model()
 
-    playbook_resp = await chat_complete(
+    playbook_coro = chat_complete(
         messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": playbook_prompt}],
         max_tokens=1500, temperature=0.1,
     )
+    notes_coro = chat_complete(
+        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": notes_prompt}],
+        max_tokens=3000, temperature=0.1,
+    )
+    playbook_resp, notes_resp = await asyncio.gather(playbook_coro, notes_coro)
 
     playbook_content = playbook_resp.choices[0].message.content or ""
+    notes_content = notes_resp.choices[0].message.content or ""
 
     # Track completion token usage
     if pool:
         pb_usage = playbook_resp.usage
+        nt_usage = notes_resp.usage
         await track_usage(pool, "completion", model,
                           pb_usage.prompt_tokens, pb_usage.completion_tokens,
                           endpoint="/analyze-playbook")
-
-    if incidents_with_notes >= _GROUNDING_HIGH:
-        grounding = 0.95
-    elif incidents_with_notes >= _GROUNDING_MED:
-        grounding = 0.85
-    elif incidents_with_notes >= _GROUNDING_LOW:
-        grounding = 0.70
-    else:
-        grounding = 0.4
+        await track_usage(pool, "completion", model,
+                          nt_usage.prompt_tokens, nt_usage.completion_tokens,
+                          endpoint="/analyze-notes")
 
     return {
         "playbook": playbook_content,
-        "notes": "",
-        "grounding_score": grounding,
+        "notes": notes_content,
+        "grounding_score": _compute_grounding_score(incidents_with_notes),
         "source_incident_count": incidents_with_notes,
         "total_similar": len(incident_details),
         "top_problem": top_problem,
@@ -474,6 +491,189 @@ async def _generate_focused_playbook(
         "other_problems": remaining_problems,
         "order_ids": unique_orders[:20],
         "jira_tickets": unique_jira,
+        "playbook_source": "similar_incidents",
+    }
+
+
+def _fetch_kb_pdf_from_servicenow(kb_number: str) -> bytes | None:
+    """Sync: load KB PDF from ServiceNow (same client pattern as get_incident_detailed)."""
+    from backend.services.servicenow_client import ServiceNowClient
+
+    try:
+        sn_client = ServiceNowClient()
+    except ValueError:
+        return None
+
+    data = sn_client.get_knowledge_article(kb_number)
+    if not data:
+        return None
+
+    pdf_meta = data.get("pdf")
+    if not isinstance(pdf_meta, dict):
+        return None
+    pdf_b64 = pdf_meta.get("base64")
+    if not pdf_b64:
+        return None
+
+    try:
+        pdf_bytes = base64.b64decode(pdf_b64, validate=True)
+        if pdf_bytes.startswith(b"%PDF"):
+            return pdf_bytes
+    except Exception:
+        return None
+    return None
+
+
+async def _load_kb_article_pdf(kb_number: str) -> bytes | None:
+    """KB article PDF: ServiceNow API first, kb_articles table fallback."""
+    kb_number = kb_number.strip().upper()
+    if not kb_number:
+        return None
+
+    sn_pdf = await asyncio.to_thread(_fetch_kb_pdf_from_servicenow, kb_number)
+    if sn_pdf:
+        return sn_pdf
+
+    try:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT kb_data FROM kb_articles
+                   WHERE UPPER(TRIM(kb_article_no)) = $1""",
+                kb_number,
+            )
+        if row and row["kb_data"]:
+            pdf_bytes = base64.b64decode(row["kb_data"], validate=True)
+            if pdf_bytes.startswith(b"%PDF"):
+                return pdf_bytes
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.warning("KB article %s database PDF lookup failed: %s", kb_number, e)
+    return None
+
+
+async def _load_kb_article_pdf_cached(
+    kb_number: str,
+    pdf_cache: dict[str, bytes | None],
+) -> bytes | None:
+    key = kb_number.strip().upper()
+    if not key:
+        return None
+    if key not in pdf_cache:
+        pdf_cache[key] = await _load_kb_article_pdf(key)
+    return pdf_cache[key]
+
+
+async def _fetch_kb_article_text(
+    kb_number: str,
+    pdf_cache: dict[str, bytes | None],
+) -> str:
+    """Plain text from cached KB article PDF bytes."""
+    pdf_bytes = await _load_kb_article_pdf_cached(kb_number, pdf_cache)
+    if not pdf_bytes:
+        return ""
+    extracted = await asyncio.to_thread(extract_plain_text_from_pdf_bytes, pdf_bytes)
+    if not extracted.strip():
+        return ""
+    return extracted[:_MAX_KB_TEXT_FOR_SUMMARY]
+
+
+async def _generate_kb_playbook_summary(
+    cleaned_issue: str,
+    incident_number: str,
+    kb_articles: list[dict],
+    pool,
+    pdf_cache: dict[str, bytes | None],
+) -> dict | None:
+    """Summarize KB PDF(s) via _load_kb_article_pdf (parallel path to _generate_focused_playbook)."""
+    sections: list[str] = []
+    for art in kb_articles:
+        number = (art.get("number") or "").strip().upper()
+        if not number:
+            continue
+        body = await _fetch_kb_article_text(number, pdf_cache)
+        if not body.strip():
+            continue
+        title = art.get("short_description") or number
+        sections.append(f"### {number}: {title}\n{body}")
+
+    articles_with_text = len(sections)
+    if not articles_with_text:
+        return None
+
+    kb_content = "\n\n".join(sections)[:_MAX_KB_TEXT_FOR_SUMMARY]
+    safe_issue = _sanitize_for_prompt(cleaned_issue)
+    safe_inc = _sanitize_for_prompt(incident_number or "N/A", max_len=50)
+    safe_kb = _sanitize_for_prompt(kb_content, max_len=_MAX_KB_TEXT_FOR_SUMMARY)
+
+    system_prompt = f"""You are a technical writer for {ORG_NAME} support engineers.
+Summarize official knowledge base content for the incident at hand.
+Use only facts from the knowledge article text. Do not invent steps or systems."""
+
+    user_prompt = f"""INCIDENT: {safe_issue}
+INCIDENT NUMBER: {safe_inc}
+
+KNOWLEDGE ARTICLE CONTENT:
+{safe_kb}
+
+Write a concise playbook-style summary (max 500 words) for the engineer handling this incident.
+
+Use this format:
+
+## Knowledge Article Summary
+
+**Article(s):** List KB numbers referenced.
+
+**What this article covers:** 2-3 sentences.
+
+**Steps for this incident:**
+1. Actionable steps from the article
+2. Continue as needed
+
+**Prerequisites / checks:** Bullet list if present in the article.
+
+**Escalate when:** Only if stated in the article.
+
+RULES: Only use information from the knowledge article text. Be specific and actionable."""
+
+    model = get_chat_model()
+    resp = await chat_complete(
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_tokens=1500,
+        temperature=0.1,
+    )
+    summary = (resp.choices[0].message.content or "").strip()
+    if not summary:
+        return None
+
+    if pool:
+        usage = resp.usage
+        await track_usage(
+            pool, "completion", model,
+            usage.prompt_tokens, usage.completion_tokens,
+            endpoint="/analyze-kb-summary",
+            incident_number=incident_number,
+        )
+
+    # Official KB PDF text is primary-source evidence; floor above sparse incident-note tiers.
+    grounding = max(_compute_grounding_score(articles_with_text), 0.85)
+
+    return {
+        "playbook": summary,
+        "notes": "",
+        "grounding_score": grounding,
+        "source_incident_count": articles_with_text,
+        "total_similar": len(kb_articles),
+        "top_problem": None,
+        "secondary_problem": None,
+        "other_problems": [],
+        "order_ids": [],
+        "jira_tickets": [],
+        "playbook_source": "knowledge_article",
     }
 
 
@@ -678,14 +878,14 @@ async def analyze_ticket(request: Request, req: AnalyzeRequest):
                     "similarity": round(r["similarity_score"], 4),
                 })
 
-    # Generate FOCUSED playbook from similar incidents (not cluster)
     incoming_cmdb = (
         req.ticket_json.get("incident_section", {}).get("Configuration item", "")
         or req.ticket_json.get("cmdb_ci", "")
         or ""
     )
     focused_playbook = await _generate_focused_playbook(
-        cleaned_issue, incident_details, incoming_cmdb, dict(cluster_info) if cluster_info else None, pool
+        cleaned_issue, incident_details, incoming_cmdb,
+        dict(cluster_info) if cluster_info else None, pool,
     )
 
     kb_articles, kb_meta = await pick_kb_for_analysis(
@@ -911,6 +1111,7 @@ async def _get_kb_article_fallbacks(incident_number: str) -> list[dict]:
 async def _resolve_kb_articles(
     ticket_kb: list,
     incident_number: str,
+    pdf_cache: dict[str, bytes | None] | None = None,
 ) -> list[dict]:
     """Merge KB articles from ticket JSON with rexus_kb_article_incident_mapping."""
     articles: list[dict] = []
@@ -930,6 +1131,18 @@ async def _resolve_kb_articles(
                 seen.add(ka["number"])
                 articles.append(ka)
 
+    if pdf_cache is not None:
+        for art in articles:
+            number = (art.get("number") or "").strip().upper()
+            if not number:
+                art.pop("pdf_base64", None)
+                continue
+            pdf_bytes = await _load_kb_article_pdf_cached(number, pdf_cache)
+            if pdf_bytes:
+                art["pdf_base64"] = base64.b64encode(pdf_bytes).decode("ascii")
+            else:
+                art.pop("pdf_base64", None)
+
     return articles
 
 
@@ -940,7 +1153,11 @@ async def _build_ticket_json_from_sn(data: dict, incident_number: str) -> dict:
     notes = data.get("notes", {})
     order = data.get("order_data", {})
     contact = data.get("contact", {})
-    kb_articles = await _resolve_kb_articles(_extract_kb_articles(data), incident_number)
+    kb_articles = await _resolve_kb_articles(
+        _extract_kb_articles(data),
+        incident_number,
+        pdf_cache=None,
+    )
 
     comments_list = notes.get("comments", [])
     comments_text = ""

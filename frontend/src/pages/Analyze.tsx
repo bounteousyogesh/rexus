@@ -292,11 +292,25 @@ export default function AnalyzePage() {
                       .join(' · ')
                   : undefined
               }
-              defaultOpen={!hasKbArticleNumber(result.focused_playbook.kb_articles)}
+              defaultOpen={
+                !(result.focused_playbook.kb_articles ?? []).some((ka) => ka.pdf_base64)
+              }
             />
           )}
 
-          {/* Row 3: Similar Incidents (compact table, collapsed) */}
+          {/* Row 3: Resolution Notes (collapsed by default) */}
+          {result.focused_playbook?.notes && (
+            <CollapsiblePlaybook
+              title="Detailed Resolution Notes"
+              content={result.focused_playbook.notes}
+              grounding={result.focused_playbook.grounding_score}
+              sourceCount={result.focused_playbook.source_incident_count}
+              totalSimilar={result.focused_playbook.total_similar}
+              defaultOpen={false}
+            />
+          )}
+
+          {/* Row 4: Similar Incidents (compact table, collapsed) */}
           <details className="bg-white rounded-lg shadow-sm border border-slate-100 overflow-hidden">
             <summary className="p-3 cursor-pointer text-xs font-semibold text-slate-600 hover:bg-slate-50">
               Similar Incidents ({result.similar_incidents.length})

@@ -289,7 +289,6 @@ async def test_insert_kb_mappings():
     kb_list = [{"number": "KB001", "short_description": "Desc"}]
     count = await insert_kb_mappings(conn, "INC001", kb_list)
     assert count == 1
-    args = conn.execute.await_args[0]
     conn.fetch.assert_awaited_once()
     args = conn.fetch.await_args[0]
     assert "ON CONFLICT" in args[0]
@@ -305,4 +304,4 @@ async def test_insert_kb_mappings_skips_duplicate():
     kb_list = [{"number": "KB001", "short_description": "Desc"}]
     count = await insert_kb_mappings(conn, "inc001", kb_list)
     assert count == 0
-     conn.fetch.assert_awaited_once()
+    conn.fetch.assert_awaited_once()

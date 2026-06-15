@@ -9,7 +9,6 @@ import type {
   SyncStatus,
 } from '../types';
 
-// CQ-003: Proper interfaces instead of `any`
 interface SyncPageProps {
   onBack?: () => void;
 }

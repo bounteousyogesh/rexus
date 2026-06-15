@@ -64,7 +64,7 @@ function AuthenticatedApp() {
               key={item.id}
               onClick={() => setPage(item.id)}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                 isNavActive(page, item.id)
+                isNavActive(page, item.id)
                   ? 'bg-slate-700 text-white'
                   : 'text-slate-400 hover:text-white hover:bg-slate-800'
               }`}
