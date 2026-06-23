@@ -46,7 +46,7 @@ export interface AnalyzeResult {
     order_ids: string[];
     jira_tickets: string[];
     kb_articles?: KbArticle[];
-    kb_source?: string;
+    kb_source?:  'incident' | 'similar';
     kb_source_incident?: string;
     kb_match_percent?: number;
     /** Set when playbook text is summarized from a linked knowledge article. */

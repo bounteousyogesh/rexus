@@ -263,9 +263,10 @@ export default function AnalyzePage() {
             )}
           </div>
 
-          {/* Row 1b: Knowledge Article from similar incidents (URL + PDF when available) */}
+          {/* Row 1b: Knowledge Article(s) (URL + PDF when available) */}
           <KnowledgeArticlesSection
             articles={result.focused_playbook?.kb_articles || []}
+            kbSource={result.focused_playbook?.kb_source}
           />
 
           {/* Row 2: Playbook (KB summary when linked, else similar-incident LLM) */}
@@ -456,16 +457,72 @@ function hasKbArticleNumber(kbArticles?: KbArticle[]): boolean {
   return Boolean(kbArticles?.some((a) => a.number?.trim()));
 }
 
-function KnowledgeArticlesSection({ articles }: { articles: KbArticle[] }) {
-  const has = articles.length > 0;
+function kaDisplayTitle(ka: KbArticle): string {
+  return ka.short_description || ka.kb_title || ka.number;
+}
+
+function KbArticleLink({ ka, className }: { ka: KbArticle; className?: string }) {
+  const label = kaDisplayTitle(ka);
+  if (ka.url) {
+    return (
+      <a
+        href={ka.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={className ?? 'text-blue-600 hover:text-blue-800 hover:underline'}
+      >
+        {label}
+      </a>
+    );
+  }
+  return <span className={className ?? 'text-slate-700'}>{label}</span>;
+}
+
+function KnowledgeArticlesSection({
+  articles,
+  kbSource,
+}: {
+  articles: KbArticle[];
+  kbSource?: AnalyzeResult['focused_playbook']['kb_source'];
+}) {
+  const count = articles.length;
+  const has = count > 0;
+  const isMulti = count > 1;
+  const single = articles[0];
+
+  const pdfUnavailable = (
+    <p className="text-sm text-slate-400 italic">
+      PDF preview unavailable — open the article link above or check ServiceNow / local KB storage.
+    </p>
+  );
+
+  const renderPdfBlock = (ka: KbArticle, defaultOpen: boolean) => {
+    if (!ka.number?.trim()) return null;
+    return (
+      <details
+        key={ka.sys_id || ka.number}
+        open={defaultOpen}
+        className="border border-amber-100 rounded-md"
+      >
+        <summary className="px-3 py-2 text-sm text-amber-900 cursor-pointer hover:bg-amber-50">
+          {ka.number} — {kaDisplayTitle(ka)}
+        </summary>
+        <div className="px-3 pb-3">
+          {ka.pdf_base64 ? <KbArticlePdfViewer article={ka} /> : pdfUnavailable}
+        </div>
+      </details>
+    );
+  };
 
   return (
     <div className="bg-white rounded-lg shadow-sm border border-amber-200 overflow-hidden">
       <div className="flex items-center justify-between px-4 py-2.5 bg-amber-50 border-b border-amber-100">
         <div className="flex items-center gap-2">
           <BookOpen size={16} className="text-amber-700" />
-          <h3 className="text-sm font-semibold text-amber-900">Knowledge Article</h3>
-          {has && (
+          <h3 className="text-sm font-semibold text-amber-900">
+            {isMulti ? 'Knowledge Articles' : 'Knowledge Article'}
+          </h3>
+          {kbSource === 'similar' && (
             <span className="text-xs px-2 py-0.5 bg-amber-200 text-amber-900 rounded-full font-medium">
               from similar incident
             </span>
@@ -478,51 +535,34 @@ function KnowledgeArticlesSection({ articles }: { articles: KbArticle[] }) {
             N/A — no knowledge article linked to a similar incident.
           </p>
         ) : (
-          <div className="space-y-6">
-            {articles.map((ka) => {
-              const hasNumber = Boolean(ka.number?.trim());
-              const showPdfViewer = Boolean(ka.pdf_base64);
-
-              return (
-                <article key={ka.sys_id || ka.number} className="space-y-3">
-                  <div className="flex items-start gap-3 flex-wrap">
-                    <span className="font-mono text-xs text-amber-700 shrink-0 pt-0.5">{ka.number}</span>
-                    {ka.match_percent != null && (
-                      <span className="text-[10px] px-1.5 py-0.5 bg-emerald-100 text-emerald-800 rounded font-semibold shrink-0">
-                        {ka.match_percent.toFixed(0)}% match
-                        {ka.matched_via_incident ? ` (${ka.matched_via_incident})` : ''}
-                      </span>
-                    )}
-                    {ka.url ? (
-                      <a
-                        href={ka.url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm text-blue-600 hover:text-blue-800 hover:underline flex-1"
-                      >
-                        {ka.short_description || ka.kb_title || ka.number}
-                      </a>
-                    ) : (
-                      <span className="text-sm text-slate-700 flex-1">
-                        {ka.short_description || ka.kb_title || ka.number}
-                      </span>
-                    )}
-                    {ka.kb_category_display && (
-                      <span className="text-[10px] text-slate-500 shrink-0">{ka.kb_category_display}</span>
-                    )}
-                  </div>
-                  {hasNumber && (
-                    showPdfViewer ? (
-                      <KbArticlePdfViewer article={ka} />
-                    ) : (
-                      <p className="text-sm text-slate-400 italic">
-                        PDF preview unavailable — open the article link above or check ServiceNow / local KB storage.
-                      </p>
-                    )
-                  )}
-                </article>
-              );
-            })}
+          <div className="space-y-4">
+            {isMulti ? (
+              <p className="text-sm">
+                {articles.map((ka, i) => (
+                  <span key={ka.sys_id || ka.number}>
+                    {i > 0 && ', '}
+                    <KbArticleLink ka={ka} />
+                  </span>
+                ))}
+              </p>
+            ) : (
+              <div className="flex items-start gap-3 flex-wrap">
+                <span className="font-mono text-xs text-amber-700 shrink-0 pt-0.5">{single.number}</span>
+                {single.match_percent != null && (
+                  <span className="text-[10px] px-1.5 py-0.5 bg-emerald-100 text-emerald-800 rounded font-semibold shrink-0">
+                    {single.match_percent.toFixed(0)}% match
+                    {single.matched_via_incident ? ` (${single.matched_via_incident})` : ''}
+                  </span>
+                )}
+                <KbArticleLink ka={single} className="text-sm flex-1" />
+                {single.kb_category_display && (
+                  <span className="text-[10px] text-slate-500 shrink-0">{single.kb_category_display}</span>
+                )}
+              </div>
+            )}
+            <div className="space-y-3">
+              {articles.map((ka, i) => renderPdfBlock(ka, i === 0))}
+            </div>
           </div>
         )}
       </div>

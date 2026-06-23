@@ -85,8 +85,8 @@ def test_score_kb_candidates_picks_highest_similarity():
 
 
 @pytest.mark.asyncio
-async def test_pick_kb_skips_incoming_incident_mapping():
-    """Incoming INC mapping is ignored; KB must come from a similar incident."""
+async def test_pick_kb_falls_back_to_similar_when_ticket_empty():
+    """When ticket_kb is empty, KB comes from highest-similarity similar incident."""
     similar = [{"incident_number": "INC300", "similarity_score": 0.88}]
 
     with patch(
@@ -99,10 +99,45 @@ async def test_pick_kb_skips_incoming_incident_mapping():
         }
         articles, meta = await pick_kb_for_analysis("INC100", [], similar)
 
+    mock_batch.assert_awaited_once()
     assert len(articles) == 1
     assert articles[0]["number"] == "KB300"
     assert meta["kb_source"] == "similar"
     assert meta["kb_source_incident"] == "INC300"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "ticket_kb,expected_numbers",
+    [
+        (
+            [{"number": "KB0019632", "short_description": "My Account Deleted"}],
+            ["KB0019632"],
+        ),
+        (
+            [
+                {"number": "KB001", "short_description": "First"},
+                {"number": "KB002", "short_description": "Second"},
+            ],
+            ["KB001", "KB002"],
+        ),
+    ],
+)
+async def test_pick_kb_uses_ticket_kb_skips_similar(ticket_kb, expected_numbers):
+    """Ticket KB wins over similar-incident mapping; all ticket articles are returned."""
+    similar = [{"incident_number": "INC300", "similarity_score": 0.88}]
+
+    with patch(
+        "backend.api.utils.kb_articles.get_kb_mappings_for_incidents",
+        new_callable=AsyncMock,
+    ) as mock_batch:
+        articles, meta = await pick_kb_for_analysis("INC100", ticket_kb, similar)
+
+    mock_batch.assert_not_awaited()
+    assert [a["number"] for a in articles] == expected_numbers
+    assert meta["kb_source"] == "incident"
+    assert "kb_source_incident" not in meta
+    assert "match_percent" not in articles[0]
 
 
 @pytest.mark.asyncio

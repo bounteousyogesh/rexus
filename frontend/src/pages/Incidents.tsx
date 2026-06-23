@@ -2,6 +2,33 @@ import { useEffect, useState, useCallback } from 'react';
 import { Search, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { api } from '../api';
 import type { Incident, KbArticleOption, PaginatedResponse } from '../types';
+import { buildKbArticleUrl } from '../utils/servicenow';
+
+function KbArticleNumbersCell({ numbers }: { numbers?: string | null }) {
+  const trimmed = numbers?.trim();
+  if (!trimmed) return <>—</>;
+
+  const articles = trimmed.split(',').map((n) => n.trim()).filter(Boolean);
+
+  return (
+    <span onClick={(e) => e.stopPropagation()}>
+      {articles.map((num, i) => (
+        <span key={num}>
+          {i > 0 && ', '}
+          <a
+            href={buildKbArticleUrl(num)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-600 hover:text-blue-800 hover:underline"
+            title={`Open ${num} in ServiceNow`}
+          >
+            {num}
+          </a>
+        </span>
+      ))}
+    </span>
+  );
+}
 
 export default function IncidentsPage() {
   const [data, setData] = useState<PaginatedResponse<Incident> | null>(null);
@@ -39,7 +66,7 @@ export default function IncidentsPage() {
 
   useEffect(() => { load(); }, [load]);
 
-   useEffect(() => {
+  useEffect(() => {
     api.incidentKbArticles()
       .then((res) => setKbArticleOptions(res.items))
       .catch(() => setKbArticleOptions([]));
@@ -77,7 +104,7 @@ export default function IncidentsPage() {
         <h2 className="text-2xl font-bold text-slate-800">Incidents</h2>
         <p className="text-sm text-slate-500">
           {data ? `${data.total.toLocaleString()} incidents` : 'Loading...'}{' '}
-          {hasActiveFilters && (
+          {(hasActiveFilters) && (
             <span className="text-blue-500">(filtered)</span>
           )}
         </p>
@@ -155,8 +182,8 @@ export default function IncidentsPage() {
           >
             <X size={14} /> Clear
           </button>
-        )}      
-	</div>
+        )}
+      </div>
       	{/* Error banner */}
       	{error && (
         	<div className="px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
@@ -192,10 +219,10 @@ export default function IncidentsPage() {
                   >
                     <td className="px-4 py-2.5 font-mono text-xs text-blue-600 whitespace-nowrap">{inc.incident_number}</td>
                     <td
-                      className="px-4 py-2.5 font-mono text-xs text-slate-600 truncate max-w-[140px]"
+                      className="px-4 py-2.5 font-mono text-xs truncate max-w-[140px]"
                       title={inc.kb_article_numbers ?? undefined}
                     >
-                      {inc.kb_article_numbers?.trim() || '—'}
+                      <KbArticleNumbersCell numbers={inc.kb_article_numbers} />
                     </td>
                     <td className="px-4 py-2.5 text-slate-700 truncate max-w-sm" title={inc.short_description}>{inc.short_description}</td>
                     <td className="px-4 py-2.5 text-xs text-slate-500">{inc.category}</td>
