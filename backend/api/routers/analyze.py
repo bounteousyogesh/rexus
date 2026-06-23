@@ -890,20 +890,28 @@ async def analyze_ticket(request: Request, req: AnalyzeRequest):
 
     kb_articles, kb_meta = await pick_kb_for_analysis(
         incident_number,
-        [],
+        req.ticket_json.get("kb_articles") or [],
         incident_details,
     )
     focused_playbook["kb_articles"] = await enrich_kb_articles_from_servicenow(kb_articles)
     focused_playbook.update(kb_meta)
-    if kb_articles and kb_meta.get("kb_source") == "similar":
-        logger.warning(
-            "Analyze KB from similar incident mapping: kb=%s via_incident=%s match_percent=%s incoming=%s",
-            kb_articles[0].get("number"),
-            kb_meta.get("kb_source_incident"),
-            kb_meta.get("kb_match_percent"),
-            incident_number,
-        )
-    elif not kb_articles:
+    if kb_articles:
+        if kb_meta.get("kb_source") == "incident":
+            logger.warning(
+                "Analyze KB from incoming incident: kb=%s incoming=%s count=%s",
+                ", ".join(a.get("number", "") for a in kb_articles),
+                incident_number,
+                len(kb_articles),
+            )
+        else:
+            logger.warning(
+                "Analyze KB from similar incident mapping: kb=%s via_incident=%s match_percent=%s incoming=%s",
+                kb_articles[0].get("number"),
+                kb_meta.get("kb_source_incident"),
+                kb_meta.get("kb_match_percent"),
+                incident_number,
+            )
+    else:
         logger.warning(
             "Analyze: no KB from similar-incident mapping for %s",
             incident_number,

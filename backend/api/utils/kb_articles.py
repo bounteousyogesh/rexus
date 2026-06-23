@@ -245,16 +245,36 @@ def _score_kb_candidates_from_similar(
     return ranked
 
 
+def _normalize_ticket_kb_list(ticket_kb: list) -> list[dict]:
+    """Dedupe and normalize KB articles from ticket_json.kb_articles."""
+    articles: list[dict] = []
+    seen: set[str] = set()
+    for ka in ticket_kb:
+        if not isinstance(ka, dict):
+            continue
+        normalized = normalize_kb_article(ka)
+        if normalized and normalized["number"] not in seen:
+            seen.add(normalized["number"])
+            articles.append(normalized)
+    return articles
+
+
 async def pick_kb_for_analysis(
     incoming_number: str | None,
     ticket_kb: list,
     incident_details: list[dict],
 ) -> tuple[list[dict], dict[str, Any]]:
     """
-    Pick KB for analyze from similar incidents only — highest vector similarity % wins.
-    Ignores mapping rows for the incoming/analyzed incident.
+    Pick KB for analyze: use all articles on the incoming ticket when present;
+    otherwise highest vector similarity among similar incidents with KB mappings.
     """
     meta: dict[str, Any] = {}
+
+    incident_articles = _normalize_ticket_kb_list(ticket_kb)
+    if incident_articles:
+        meta["kb_source"] = "incident"
+        return incident_articles, meta
+
     incoming = (incoming_number or "").strip().upper()
 
     similar_details = [
