@@ -292,6 +292,7 @@ async def test_insert_kb_mappings():
     conn.fetch.assert_awaited_once()
     args = conn.fetch.await_args[0]
     assert "ON CONFLICT" in args[0]
+    assert "NOT EXISTS" not in args[0]
     assert args[1] == "INC001"
     assert args[2] == ["KB001"]
     assert args[3] == ["Desc"]

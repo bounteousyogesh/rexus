@@ -1,4 +1,4 @@
-﻿import { useEffect, useState, useCallback } from 'react';
+﻿import { useEffect, useState, useCallback, useMemo  } from 'react';
 import { RefreshCw, Download, CheckCircle2, AlertCircle, Loader2, Database, Cloud, ArrowLeft } from 'lucide-react';
 import { api } from '../api';
 import type {
@@ -80,7 +80,23 @@ export default function SyncPage({ onBack }: SyncPageProps) {
 
   useEffect(() => { checkStatus(); }, [checkStatus]);
 
-  const groups: SyncDeltaGroup[] = delta ? (groupBy === 'month' ? delta.by_month : groupBy === 'week' ? delta.by_week : delta.by_day) : [];
+  const groups: SyncDeltaGroup[] = useMemo(() => {
+    if (!delta) return [];
+    const rawGroups = groupBy === 'month' ? delta.by_month : groupBy === 'week' ? delta.by_week : delta.by_day;
+    return rawGroups
+      .map((group) => {
+        const incidents = group.incidents.filter((incident) => {
+          const openedDate = incident.opened_at?.slice(0, 10);
+          return Boolean(openedDate && openedDate >= startDate && openedDate <= endDate);
+        });
+        return { ...group, count: incidents.length, incidents };
+      })
+      .filter((group) => group.count > 0);
+  }, [delta, endDate, groupBy, startDate]);
+  const visibleTotalDelta = useMemo(
+    () => new Set(groups.flatMap((group) => group.incidents.map((incident) => incident.incident_number))).size,
+    [groups],
+  );
   const importBatchSize = status?.import_max_incidents ?? 1000;
 
   return (
@@ -199,10 +215,9 @@ export default function SyncPage({ onBack }: SyncPageProps) {
       {delta && (
         <div className="flex items-center justify-between">
           <p className="text-sm text-slate-600">
-            Found <strong>{delta.total_discovered}</strong> incidents
+            Found <strong>{visibleTotalDelta}</strong> new incidents in selected range
             <span className="text-slate-400 text-xs ml-1">(source: {delta.source})</span>,{' '}
-            <strong>{delta.already_in_db}</strong> already in DB,{' '}
-            <strong className="text-blue-600">{delta.total_delta}</strong> new to import
+            <strong className="text-blue-600">{visibleTotalDelta}</strong> new to import
           </p>
           <div className="flex items-center gap-1">
             {(['day', 'week', 'month'] as const).map(g => (
@@ -217,13 +232,13 @@ export default function SyncPage({ onBack }: SyncPageProps) {
       {/* Delta results */}
       {delta && (
         <div className="space-y-3">
-          {delta.total_delta === 0 ? (
+          {visibleTotalDelta  === 0 ? (
             <div className={`rounded-xl p-6 text-center border ${
-              delta.total_discovered === 0
+              visibleTotalDelta === 0
                 ? 'bg-amber-50 border-amber-200'
                 : 'bg-emerald-50 border-emerald-200'
             }`}>
-              {delta.total_discovered === 0 ? (
+              {visibleTotalDelta === 0 ? (
                 <>
                   <AlertCircle size={28} className="mx-auto text-amber-500 mb-2" />
                   <p className="text-sm font-medium text-amber-800">No incidents found for this date range</p>
@@ -242,7 +257,7 @@ export default function SyncPage({ onBack }: SyncPageProps) {
                   <CheckCircle2 size={28} className="mx-auto text-emerald-500 mb-2" />
                   <p className="text-sm font-medium text-emerald-800">All discovered incidents are already imported</p>
                   <p className="text-xs text-emerald-600">
-                    {delta.already_in_db} of {delta.total_discovered} in this search are in the database.
+                    {delta.already_in_db} of {visibleTotalDelta} in this search are in the database.
                   </p>
                 </>
               )}
@@ -251,7 +266,7 @@ export default function SyncPage({ onBack }: SyncPageProps) {
             <>
               <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center justify-between">
                 <p className="text-sm font-medium text-amber-800">
-                  {delta.total_delta} new closed incidents found in ServiceNow
+                  {visibleTotalDelta} new closed incidents found in ServiceNow
                 </p>
                 <button
                   onClick={async () => {
@@ -270,13 +285,13 @@ export default function SyncPage({ onBack }: SyncPageProps) {
                     }
                     refreshAfterImport();
                   }}
-                  disabled={importingKey !== null || delta.total_delta === 0}
+                  disabled={importingKey !== null || visibleTotalDelta === 0}
                   className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
                 >
                   {importingKey === '__all__' ? (
                     <><Loader2 size={14} className="animate-spin" /> Importing...</>
                   ) : (
-                    <><Download size={14} /> Import All ({delta.total_delta})</>
+                    <><Download size={14} /> Import All ({visibleTotalDelta})</>
                   )}
                 </button>
               </div>

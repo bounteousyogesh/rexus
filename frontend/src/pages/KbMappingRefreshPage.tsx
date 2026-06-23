@@ -36,6 +36,25 @@ function isRefreshSuccess(status: KbMappingRefreshResult['status']): boolean {
   return status === 'mapped' || status === 'no_kb';
 }
 
+function RefreshResultIcon({ result }: { result: KbMappingRefreshResult }) {
+  if (result.status === 'error' || result.status === 'not_found') {
+    const tooltip = result.error || (
+      result.status === 'not_found'
+        ? 'Incident not found in ServiceNow'
+        : 'Refresh failed'
+    );
+    return (
+      <span title={tooltip} className="inline-flex cursor-help">
+        <AlertCircle size={12} className="text-red-500" />
+      </span>
+    );
+  }
+  if (isRefreshSuccess(result.status)) {
+    return <CheckCircle2 size={12} className="text-emerald-500" />;
+  }
+  return null;
+}
+
 function emptySummary(): KbMappingRefreshSummary {
   return {
     candidates: 0,
@@ -365,15 +384,7 @@ export default function KbMappingRefreshPage({ onBack }: KbMappingRefreshPagePro
                                 <td className="px-3 py-1.5 text-slate-400">{inc.opened_at?.slice(0, 10)}</td>
                                 <td className={`px-3 py-1.5 font-medium ${kb.className}`}>{kb.text}</td>
                                 <td className="px-3 py-1.5">
-                                  {result && isRefreshSuccess(result.status) && (
-                                    <CheckCircle2 size={12} className="text-emerald-500" />
-                                  )}
-                                  {result?.status === 'not_found' && (
-                                    <AlertCircle size={12} className="text-amber-500" />
-                                  )}
-                                  {result?.status === 'error' && (
-                                    <AlertCircle size={12} className="text-red-500" />
-                                  )}
+                                  {result && <RefreshResultIcon result={result} />}
                                 </td>
                               </tr>
                             );

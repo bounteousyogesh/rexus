@@ -17,12 +17,58 @@ Design note:
 import pytest
 import httpx
 
+from backend.api.routers.sync import _filter_incidents_by_opened_date
 from backend.api.utils.sync_constants import SYNC_IMPORT_MAX
+from backend.services.servicenow_client import ServiceNowClient
 
 
 SYNC_STATUS_URL = "/api/v1/sync/status"
 SYNC_DELTA_URL  = "/api/v1/sync/delta"
 SYNC_IMPORT_URL = "/api/v1/sync/import"
+
+
+# ===========================================================================
+# Unit: date range filtering
+# ===========================================================================
+
+def test_filter_incidents_by_opened_date_enforces_requested_range():
+    incidents = [
+        {"number": "INC0000001", "opened_at": "2025-08-31 23:59:59"},
+        {"number": "INC0000002", "opened_at": "2025-09-01 00:00:00"},
+        {"number": "INC0000003", "sys_created_on": "2025-09-30 12:00:00"},
+        {"number": "INC0000004", "opened_at": "2025-10-01 00:00:00"},
+        {"number": "INC0000005", "opened_at": ""},
+        {"incident": {"number": "INC0000006", "opened_at": "2025-09-15 08:00:00"}},
+        {"incident": {"number": "INC0000007", "opened_on": "2025-08-15"}},
+    ]
+
+    filtered = _filter_incidents_by_opened_date(incidents, "2025-09-01", "2025-09-30")
+
+    assert [
+        incident.get("number") or incident.get("incident", {}).get("number")
+        for incident in filtered
+    ] == ["INC0000002", "INC0000003", "INC0000006"]
+
+
+def test_servicenow_month_chunk_search_includes_single_day_range(monkeypatch):
+    client = ServiceNowClient(
+        instance_url="https://example.service-now.com",
+        client_id="client-id",
+        client_secret="client-secret",
+    )
+    calls = []
+
+    def fake_search_incidents(**kwargs):
+        calls.append(kwargs)
+        return [{"number": "INC0000001", "opened_at": kwargs["start_date"]}]
+
+    monkeypatch.setattr(client, "search_incidents", fake_search_incidents)
+
+    incidents = client.search_incidents_by_months("2025-09-01", "2025-09-01")
+
+    assert incidents == [{"number": "INC0000001", "opened_at": "2025-09-01"}]
+    assert calls[0]["start_date"] == "2025-09-01"
+    assert calls[0]["end_date"] == "2025-09-01"
 
 
 # ===========================================================================

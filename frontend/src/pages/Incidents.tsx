@@ -1,15 +1,17 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Search, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { api } from '../api';
-import type { Incident, PaginatedResponse } from '../types';
+import type { Incident, KbArticleOption, PaginatedResponse } from '../types';
 
 export default function IncidentsPage() {
   const [data, setData] = useState<PaginatedResponse<Incident> | null>(null);
+  const [kbArticleOptions, setKbArticleOptions] = useState<KbArticleOption[]>([]);
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const [searchSubmitted, setSearchSubmitted] = useState('');
   const [category, setCategory] = useState('');
   const [cmdbCi, setCmdbCi] = useState('');
+  const [kbArticle, setKbArticle] = useState('');
   const [selected, setSelected] = useState<Incident | null>(null);
   const [detailData, setDetailData] = useState<Incident | null>(null);
   const [loading, setLoading] = useState(true);
@@ -25,6 +27,7 @@ export default function IncidentsPage() {
         search: searchSubmitted || undefined,
         category: category || undefined,
         cmdb_ci: cmdbCi || undefined,
+        kb_article: kbArticle || undefined,
       });
       setData(result);
     } catch (err) {
@@ -32,9 +35,15 @@ export default function IncidentsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, searchSubmitted, category, cmdbCi]);
+  }, [page, searchSubmitted, category, cmdbCi, kbArticle]);
 
   useEffect(() => { load(); }, [load]);
+
+   useEffect(() => {
+    api.incidentKbArticles()
+      .then((res) => setKbArticleOptions(res.items))
+      .catch(() => setKbArticleOptions([]));
+  }, []);
 
   const handleSearch = () => {
     setSearchSubmitted(search);
@@ -60,6 +69,7 @@ export default function IncidentsPage() {
   };
 
   const detail = detailData || selected;
+  const hasActiveFilters = searchSubmitted || category || cmdbCi || kbArticle;
 
   return (
     <div className="p-6 space-y-4">
@@ -67,7 +77,7 @@ export default function IncidentsPage() {
         <h2 className="text-2xl font-bold text-slate-800">Incidents</h2>
         <p className="text-sm text-slate-500">
           {data ? `${data.total.toLocaleString()} incidents` : 'Loading...'}{' '}
-          {(searchSubmitted || category || cmdbCi) && (
+          {hasActiveFilters && (
             <span className="text-blue-500">(filtered)</span>
           )}
         </p>
@@ -119,9 +129,28 @@ export default function IncidentsPage() {
           <option value="Skybot">Skybot</option>
           <option value="Oracle Retail">Oracle Retail</option>
         </select>
-        {(searchSubmitted || category || cmdbCi) && (
+        <select
+          value={kbArticle}
+          onChange={(e) => { setKbArticle(e.target.value); setPage(1); }}
+          className="px-3 py-2.5 bg-white border border-slate-200 rounded-lg text-sm max-w-[200px]"
+        >
+          <option value="">All KA Articles</option>
+          {kbArticleOptions.map((opt) => (
+            <option key={opt.knowledge_article_number} value={opt.knowledge_article_number}>
+              {opt.knowledge_article_number} ({opt.incident_count})
+            </option>
+          ))}
+        </select>
+        {hasActiveFilters && (
           <button
-            onClick={() => { setSearch(''); setSearchSubmitted(''); setCategory(''); setCmdbCi(''); setPage(1); }}
+            onClick={() => {
+              setSearch('');
+              setSearchSubmitted('');
+              setCategory('');
+              setCmdbCi('');
+              setKbArticle('');
+              setPage(1);
+            }}
             className="flex items-center gap-1 px-3 py-2 text-sm text-red-500 hover:bg-red-50 rounded-lg"
           >
             <X size={14} /> Clear
@@ -145,6 +174,7 @@ export default function IncidentsPage() {
               <thead>
                 <tr className="text-left text-xs text-slate-500 bg-slate-50 border-b border-slate-100">
                   <th className="px-4 py-3 w-28">Incident #</th>
+                  <th className="px-4 py-3 w-36">KA Article #</th>
                   <th className="px-4 py-3">Description</th>
                   <th className="px-4 py-3 w-24">Category</th>
                   <th className="px-4 py-3 w-36">System (CMDB)</th>
@@ -161,6 +191,12 @@ export default function IncidentsPage() {
                     className="border-b border-slate-50 hover:bg-blue-50/50 cursor-pointer transition-colors"
                   >
                     <td className="px-4 py-2.5 font-mono text-xs text-blue-600 whitespace-nowrap">{inc.incident_number}</td>
+                    <td
+                      className="px-4 py-2.5 font-mono text-xs text-slate-600 truncate max-w-[140px]"
+                      title={inc.kb_article_numbers ?? undefined}
+                    >
+                      {inc.kb_article_numbers?.trim() || '—'}
+                    </td>
                     <td className="px-4 py-2.5 text-slate-700 truncate max-w-sm" title={inc.short_description}>{inc.short_description}</td>
                     <td className="px-4 py-2.5 text-xs text-slate-500">{inc.category}</td>
                     <td className="px-4 py-2.5 text-xs text-slate-500 truncate max-w-[140px]" title={inc.cmdb_ci}>{inc.cmdb_ci}</td>

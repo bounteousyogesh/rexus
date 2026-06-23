@@ -1,5 +1,5 @@
 export type { PaginatedResponse } from './common';
-export type { Incident } from './incidents';
+export type { Incident, KbArticleOption  } from './incidents';
 export type { Cluster, Playbook } from './clusters';
 export type { KbArticle, AnalyzeResult } from './analyze';
 export type { SearchResult } from './search';

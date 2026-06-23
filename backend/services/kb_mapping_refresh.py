@@ -85,13 +85,28 @@ async def run_kb_mapping_refresh(pool, sn_client, incident_numbers: list[str]) -
 
     async with pool.acquire() as conn:
 
+        def _kb_numbers(kb_list: list[dict]) -> list[str]:
+            nums: list[str] = []
+            for ka in kb_list:
+                if not isinstance(ka, dict):
+                    continue
+                number = ka.get("number") or ka.get("knowledge_article_number") or ""
+                if isinstance(number, str) and number.strip():
+                    nums.append(number.strip().upper())
+            return nums
+
         async def process_one(i: int, inc: str) -> dict:
+            kb_list: list[dict] = []
             try:
                 async with semaphore:
                     data = await asyncio.to_thread(sn_client.get_incident_detailed, inc, True)
                 if not data:
                     logger.warning("[%d/%d] %s not found in ServiceNow", i, total, inc)
-                    return {"incident": inc, "status": "not_found"}
+                    return {
+                        "incident": inc,
+                        "status": "not_found",
+                        "error": f"{inc}: incident not found in ServiceNow",
+                    }
 
                 kb_list = extract_kb_articles(data)
                 if not kb_list:
@@ -120,8 +135,10 @@ async def run_kb_mapping_refresh(pool, sn_client, incident_numbers: list[str]) -
                     "kb_inserted": inserted,
                 }
             except Exception as e:
-                logger.error("[%d/%d] %s error: %s", i, total, inc, e)
-                return {"incident": inc, "status": "error", "error": str(e)[:500]}
+                ka_label = ", ".join(_kb_numbers(kb_list)) or "unknown"
+                error = f"{inc}: error mapping KA article(s) [{ka_label}]: {e}"
+                logger.error("[%d/%d] %s", i, total, error, exc_info=True)
+                return {"incident": inc, "status": "error", "error": error[:500]}
 
         results = list(await asyncio.gather(*[
             process_one(i, inc) for i, inc in enumerate(unique_numbers, start=1)

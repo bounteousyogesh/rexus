@@ -690,15 +690,19 @@ async def insert_kb_mappings(conn, incident_number: str, kb_list: list[dict]) ->
     if not numbers:
         return 0
 
-    rows = await conn.fetch(
-        """INSERT INTO rexus_kb_article_incident_mapping
-               (incident_number, knowledge_article_number, kb_description)
-           SELECT $1, ka_num, ka_desc
-           FROM unnest($2::text[], $3::text[]) AS t(ka_num, ka_desc)
-           ON CONFLICT (incident_number, knowledge_article_number) DO NOTHING
-           RETURNING 1""",
-        inc,
-        numbers,
-        descriptions,
-    )
+     try:
+        rows = await conn.fetch(
+            """INSERT INTO rexus_kb_article_incident_mapping
+                   (incident_number, knowledge_article_number, kb_description)
+               SELECT $1, ka_num, ka_desc
+               FROM unnest($2::text[], $3::text[]) AS t(ka_num, ka_desc)
+               ON CONFLICT (incident_number, knowledge_article_number) DO NOTHING
+               RETURNING 1""",
+            inc,
+            numbers,
+            descriptions,
+        )
+    except Exception as e:
+        logger.error("%s: error mapping KA article(s) [%s]: %s", inc, ", ".join(numbers), e, exc_info=True,)
+        raise
     return len(rows)

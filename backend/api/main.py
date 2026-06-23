@@ -46,7 +46,7 @@ async def _ensure_default_admin() -> None:
 
 
 async def _run_migrations() -> None:
-    """Run all SQL migrations in order on startup.
+    """Run numbered SQL migrations in order on startup.
 
     Each migration uses IF NOT EXISTS / IF EXISTS guards, so re-running
     is safe. This eliminates the need to manually apply migrations or
@@ -59,7 +59,11 @@ async def _run_migrations() -> None:
         return
 
     pool = await get_pool()
-    sql_files = sorted(migrations_dir.glob("*.sql"))
+    # Only numbered migrations (001_*.sql). Never auto-run full-rebuild scripts
+    # such as rexus_schema_sql_prod.sql — they DROP rexus_incidents_v3 and wipe imports.
+    sql_files = sorted(
+        f for f in migrations_dir.glob("*.sql") if f.name[:3].isdigit() and f.name[3] == "_"
+    )
     for sql_file in sql_files:
         try:
             sql = sql_file.read_text()
