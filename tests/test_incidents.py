@@ -193,6 +193,46 @@ def test_list_incidents_filter_by_cmdb_ci_returns_only_matching_rows(client: htt
 
 
 # ---------------------------------------------------------------------------
+# List incidents — filter by kb_article
+# ---------------------------------------------------------------------------
+
+def test_list_incidents_items_include_kb_article_numbers_field(client: httpx.Client):
+    """Each item in GET /incidents must include kb_article_numbers."""
+    body = client.get(INCIDENTS_URL, params={"page_size": 1}).json()
+    if not body["items"]:
+        pytest.skip("No incidents in the database")
+    assert "kb_article_numbers" in body["items"][0]
+
+
+def test_list_incidents_kb_articles_endpoint_returns_list(client: httpx.Client):
+    """GET /incidents/kb-articles must return an items list."""
+    response = client.get(f"{INCIDENTS_URL}/kb-articles")
+    assert response.status_code == 200
+    body = response.json()
+    assert "items" in body
+    assert isinstance(body["items"], list)
+    for item in body["items"]:
+        assert "knowledge_article_number" in item
+        assert "incident_count" in item
+
+
+def test_list_incidents_filter_by_kb_article_returns_only_matching_rows(client: httpx.Client):
+    """GET /incidents?kb_article=X must return only incidents mapped to that KB."""
+    kb_options = client.get(f"{INCIDENTS_URL}/kb-articles").json().get("items", [])
+    if not kb_options:
+        pytest.skip("No KB article options in the database")
+
+    kb_number = kb_options[0]["knowledge_article_number"]
+    filtered = client.get(INCIDENTS_URL, params={"kb_article": kb_number}).json()
+    assert filtered["total"] >= 1
+    for item in filtered["items"]:
+        assert item.get("kb_article_numbers"), (
+            f"Filter kb_article='{kb_number}' returned incident without kb_article_numbers"
+        )
+        assert kb_number.upper() in item["kb_article_numbers"].upper()
+
+
+# ---------------------------------------------------------------------------
 # List incidents — full-text search filter
 # ---------------------------------------------------------------------------
 

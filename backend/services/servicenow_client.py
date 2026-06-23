@@ -202,7 +202,7 @@ class ServiceNowClient:
         all_incidents = []
         chunk_start = start
 
-        while chunk_start < end:
+        while chunk_start <= end:
             # Each chunk = 1 month
             if chunk_start.month == 12:
                 chunk_end = chunk_start.replace(year=chunk_start.year + 1, month=1, day=1) - timedelta(days=1)

@@ -8,8 +8,7 @@ CREATE TABLE IF NOT EXISTS rexus_kb_article_incident_mapping (
     knowledge_article_number VARCHAR(50) NOT NULL,
     apcr VARCHAR(100),
     kb_description TEXT,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (incident_number, knowledge_article_number)
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_kb_article_incident_mapping_incident
@@ -17,10 +16,6 @@ CREATE INDEX IF NOT EXISTS idx_kb_article_incident_mapping_incident
 
 CREATE INDEX IF NOT EXISTS idx_kb_article_incident_mapping_kb
   ON rexus_kb_article_incident_mapping (knowledge_article_number);
-
-ALTER TABLE rexus_kb_article_incident_mapping
-    ADD CONSTRAINT rexus_kb_article_incident_mapping_incident_number_knowledge_key
-    UNIQUE (incident_number, knowledge_article_number);
 
 INSERT INTO rexus_kb_article_incident_mapping (incident_number, knowledge_article_number, apcr, kb_description)
 VALUES
@@ -69,6 +64,15 @@ VALUES
     ('INC2020171', 'KB0020387', NULL, 'Export Status Returns RETRYLATER'),
     ('INC2024334', 'KB0020387', NULL, 'Export Status Returns RETRYLATER'),
     ('INC2025115', 'KB0020387', NULL, 'Export Status Returns RETRYLATER'),
-    ('INC2285121', 'KB0020387', NULL, 'Export Status Returns RETRYLATER'),
-    ('INC2007084', 'KB0020379', NULL, 'Update Delivery Address')
-ON CONFLICT (incident_number, knowledge_article_number) DO NOTHING;
+    ('INC2285121', 'KB0020387', NULL, 'Export Status Returns RETRYLATER');
+
+-- Clean duplicate rows (keeps lowest id per incident + KA pair).
+DELETE FROM rexus_kb_article_incident_mapping a
+USING rexus_kb_article_incident_mapping b
+WHERE a.id > b.id
+  AND UPPER(TRIM(a.incident_number)) = UPPER(TRIM(b.incident_number))
+  AND UPPER(TRIM(a.knowledge_article_number)) = UPPER(TRIM(b.knowledge_article_number));
+
+ALTER TABLE rexus_kb_article_incident_mapping
+    ADD CONSTRAINT rexus_kb_article_incident_mapping_incident_number_knowledge_key
+    UNIQUE (incident_number, knowledge_article_number);

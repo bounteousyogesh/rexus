@@ -202,6 +202,58 @@ async def test_run_kb_mapping_refresh_mapped_sets_has_kb_true():
 
 
 @pytest.mark.asyncio
+async def test_run_kb_mapping_refresh_already_mapped_shows_success():
+    sn_client = MagicMock()
+    sn_client.get_incident_detailed.return_value = {
+        "kb_articles": [{"number": "KB0020379", "short_description": "Fix"}],
+    }
+    conn = AsyncMock()
+    conn.execute = AsyncMock()
+    pool = _mock_pool(conn)
+
+    with patch(
+        "backend.services.kb_mapping_refresh.insert_kb_mappings",
+        new_callable=AsyncMock,
+        return_value=0,
+    ):
+        result = await run_kb_mapping_refresh(pool, sn_client, ["INC2330674"])
+
+    row = result["results"][0]
+    assert row["status"] == "mapped"
+    assert row["kb_inserted"] == 0
+    assert "message" not in row
+
+
+@pytest.mark.asyncio
+async def test_run_kb_mapping_refresh_insert_error_includes_incident_and_ka():
+    sn_client = MagicMock()
+    sn_client.get_incident_detailed.return_value = {
+        "kb_articles": [{"number": "KB0020379", "short_description": "Fix"}],
+    }
+    conn = AsyncMock()
+    conn.execute = AsyncMock()
+    pool = _mock_pool(conn)
+    pg_error = Exception(
+        "there is no unique or exclusion constraint matching the ON CONFLICT specification"
+    )
+
+    with patch(
+        "backend.services.kb_mapping_refresh.insert_kb_mappings",
+        new_callable=AsyncMock,
+        side_effect=pg_error,
+    ):
+        result = await run_kb_mapping_refresh(pool, sn_client, ["INC2330674"])
+
+    row = result["results"][0]
+    assert row["status"] == "error"
+    assert "INC2330674" in row["error"]
+    assert "KB0020379" in row["error"]
+    assert "ON CONFLICT" in row["error"]
+    assert "message" not in row
+    conn.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_run_kb_mapping_refresh_no_kb_sets_has_kb_false():
     sn_client = MagicMock()
     sn_client.get_incident_detailed.return_value = {"incident": {"number": "INC0000200"}}
@@ -228,6 +280,7 @@ async def test_run_kb_mapping_refresh_not_found_leaves_has_kb_unchanged():
     result = await run_kb_mapping_refresh(pool, sn_client, ["INC0000300"])
 
     assert result["results"][0]["status"] == "not_found"
+    assert "INC0000300" in result["results"][0]["error"]
     assert result["summary"]["not_found"] == 1
     conn.execute.assert_not_awaited()
 

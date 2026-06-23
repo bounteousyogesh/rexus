@@ -68,6 +68,59 @@ def _catalog_date_bounds() -> tuple[str | None, str | None]:
     return min_d, max_d
 
 
+def _incident_payload(incident: dict) -> dict:
+    """Return the nested ServiceNow incident payload when present."""
+    nested = incident.get("incident")
+    return nested if isinstance(nested, dict) else {}
+
+
+def _incident_value(incident: dict, *keys: str) -> str:
+    """Return the first non-empty value from flat or nested incident fields."""
+    nested = _incident_payload(incident)
+    for key in keys:
+        value = incident.get(key) or nested.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _incident_opened_date(incident: dict) -> str | None:
+    """Return the incident opened date as YYYY-MM-DD, if present."""
+    opened = _incident_value(
+        incident,
+        "opened_at",
+        "opened_on",
+        "opened",
+        "sys_created_on",
+        "created_on",
+        "closed_at",
+        "closed_on",
+    )
+    match = re.search(r"\d{4}-\d{2}-\d{2}", opened)
+    if not match:
+        return None
+    date_str = match.group(0)
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return date_str
+
+
+def _filter_incidents_by_opened_date(
+    incidents: list[dict],
+    start_date: str,
+    end_date: str,
+) -> list[dict]:
+    """Keep only incidents whose opened date falls inside the requested range."""
+    return [
+        incident
+        for incident in incidents
+        if (opened_date := _incident_opened_date(incident))
+        and start_date <= opened_date <= end_date
+    ]
+
+
 def _load_from_catalog(
     start_date: str, end_date: str, closed_only: bool,
     category: str | None = None, cmdb_ci: str | None = None,
@@ -400,21 +453,26 @@ async def sync_delta(
     except Exception as search_err:
         logger.info(f"DT Search API not available ({search_err}), using CSV only")
 
+    # Do not rely solely on the upstream Search API to enforce dates. The UI groups
+    # by opened_at, so keep the displayed/importable delta inside that same range.
+    sn_incidents = _filter_incidents_by_opened_date(sn_incidents, start_date, end_date)
+
     # Extract incident numbers and basic info
     sn_list = []
     for inc in sn_incidents:
         # Handle both flat and nested response structures
         if isinstance(inc, dict):
-            num = inc.get("number", "") or inc.get("incident_number", "")
+            num = _incident_value(inc, "number", "incident_number")
             if not num:
                 continue
+            opened_date = _incident_opened_date(inc) or ""
             sn_list.append({
                 "incident_number": num,
-                "short_description": (inc.get("short_description", "") or "")[:80],
-                "opened_at": inc.get("opened_at", "") or inc.get("sys_created_on", ""),
-                "cmdb_ci": inc.get("cmdb_ci_display", "") or inc.get("cmdb_ci", ""),
-                "category": inc.get("category", ""),
-                "state": inc.get("incident_state_display", "") or inc.get("incident_state", "") or inc.get("state", ""),
+                "short_description": _incident_value(inc, "short_description")[:80],
+                "opened_at": opened_date,
+                "cmdb_ci": _incident_value(inc, "cmdb_ci_display", "cmdb_ci"),
+                "category": _incident_value(inc, "category"),
+                "state": _incident_value(inc, "incident_state_display", "incident_state", "state"),
             })
 
     # Check which of these already exist in our DB

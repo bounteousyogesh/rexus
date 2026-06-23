@@ -1,3 +1,8 @@
+export interface KbArticleOption {
+  knowledge_article_number: string;
+  incident_count: number;
+}
+
 export interface Incident {
   id: number;
   incident_number: string;
@@ -17,6 +22,7 @@ export interface Incident {
   resolved_at?: string;
   closed_at?: string;
   has_kb_article?: boolean | null;
+  kb_article_numbers?: string | null;
   similarity_score?: number;
   cluster_id?: number;
   cluster?: { id: number; cluster_name: string; similarity_to_centroid: number };

@@ -6,6 +6,7 @@ import type {
   KbMappingRefreshResponse,
   Cluster,
   Incident,
+  KbArticleOption,
   KbArticleFilter,
   LoginResponse,
   PaginatedResponse,
@@ -29,6 +30,7 @@ export type {
   KbMappingRefreshSummary,
   Cluster,
   Incident,
+  KbArticleOption,
   KbArticleFilter,
   KbArticle,
   LoginResponse,
@@ -99,15 +101,19 @@ export async function del<T>(path: string): Promise<T> {
 export const api = {
   health: () => fetch('/health').then(r => { if (!r.ok) throw new Error(`API error: ${r.status}`); return r.json() as Promise<{ status: string; database: string; incidents_count: number }>; }),
 
-  incidents: (params?: { page?: number; page_size?: number; category?: string; cmdb_ci?: string; search?: string }) => {
+  incidents: (params?: { page?: number; page_size?: number; category?: string; cmdb_ci?: string; search?: string; kb_article?: string }) => {
     const qs = new URLSearchParams();
     if (params?.page) qs.set('page', String(params.page));
     if (params?.page_size) qs.set('page_size', String(params.page_size));
     if (params?.category) qs.set('category', params.category);
     if (params?.cmdb_ci) qs.set('cmdb_ci', params.cmdb_ci);
     if (params?.search) qs.set('search', params.search);
+    if (params?.kb_article?.trim()) qs.set('kb_article', params.kb_article.trim());
     return get<PaginatedResponse<Incident>>(`/incidents?${qs}`);
   },
+
+  incidentKbArticles: () =>
+    get<{ items: KbArticleOption[] }>('/incidents/kb-articles'),
 
   incident: (number: string) => get<Incident>(`/incidents/${number}`),
 
