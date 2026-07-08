@@ -17,9 +17,9 @@ const STEPS: { key: Step; label: string }[] = [
   { key: 'done', label: 'Analysis complete' },
 ];
 
-export default function AnalyzePage() {
+export default function AnalyzePage({ initialIncident }: { initialIncident?: string } = {}) {
   // ENH-012: All useState declarations at top of component, before any function definitions
-  const [incNumber, setIncNumber] = useState('');
+  const [incNumber, setIncNumber] = useState(initialIncident ?? '');
   const [incFetched, setIncFetched] = useState(false);
   const [fetching, setFetching] = useState(false);
   const [ticketJson, setTicketJson] = useState('');
@@ -28,6 +28,7 @@ export default function AnalyzePage() {
   const [expandedInc, setExpandedInc] = useState<string | null>(null);
   const [error, setError] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+  const deepLinkStartedRef = useRef(false);
   const [isDev, setIsDev] = useState(true);
 
   // Check environment — hide PDF upload in production
@@ -58,21 +59,83 @@ export default function AnalyzePage() {
     if (fileRef.current) fileRef.current.value = '';
   };
 
+  const runAnalysisOnTicket = async (parsed: Record<string, unknown>) => {
+    setStep('parsing');
+    setResult(null);
+    setExpandedInc(null);
+
+    setStep('playbooks');
+    const data = await api.analyze(parsed);
+    setStep('done');
+    setResult(data);
+  };
+
+  const fetchIncidentFromServiceNow = async (trimmed: string) => {
+    setStep('fetching');
+    setFetching(true);
+    setResult(null);
+    setExpandedInc(null);
+    try {
+      const fetched = await api.fetchIncident(trimmed);
+      setTicketJson(JSON.stringify(fetched, null, 2));
+      setIncFetched(true);
+      setStep('idle');
+      return fetched;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('404')) {
+        setError(`Incident ${trimmed} was not found in the configured ServiceNow instance.`);
+      } else if (msg.includes('503')) {
+        setError('ServiceNow credentials are not configured. Contact your administrator.');
+      } else {
+        setError(`Failed to fetch from ServiceNow: ${msg}`);
+      }
+      setStep('idle');
+      return null;
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  const runFetchAndAnalyze = async (incident: string) => {
+    setError('');
+    const trimmed = incident.trim().toUpperCase();
+    if (!trimmed) {
+      setError('Enter an incident number');
+      return;
+    }
+    if (!/^INC\d+$/.test(trimmed)) {
+      setError('Invalid format. Enter an INC number (e.g. INC0000000)');
+      return;
+    }
+
+    setIncNumber(trimmed);
+    const fetched = await fetchIncidentFromServiceNow(trimmed);
+    if (!fetched) return;
+
+    try {
+      await runAnalysisOnTicket(fetched);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message);
+      setStep('idle');
+    }
+  };
+
+  useEffect(() => {
+    if (!initialIncident || deepLinkStartedRef.current) return;
+    deepLinkStartedRef.current = true;
+    void runFetchAndAnalyze(initialIncident);
+  }, [initialIncident]);
+
   const handleAnalyze = async () => {
     setError('');
 
     // If we already have JSON (from PDF or prior fetch), go straight to analysis
     if (incFetched && ticketJson) {
       try {
-        setStep('parsing');
-        setResult(null);
-        setExpandedInc(null);
         const parsed = JSON.parse(ticketJson);
-
-        setStep('playbooks');
-        const data = await api.analyze(parsed);
-        setStep('done');
-        setResult(data);
+        await runAnalysisOnTicket(parsed);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setError(message);
@@ -86,28 +149,7 @@ export default function AnalyzePage() {
     if (!trimmed) { setError('Enter an incident number'); return; }
     if (!/^INC\d+$/.test(trimmed)) { setError('Invalid format. Enter an INC number (e.g. INC0000000)'); return; }
 
-    setStep('fetching');
-    setFetching(true);
-    setResult(null);
-    setExpandedInc(null);
-    try {
-      const fetched = await api.fetchIncident(trimmed);
-      setTicketJson(JSON.stringify(fetched, null, 2));
-      setIncFetched(true);
-      setStep('idle');
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('404')) {
-        setError(`Incident ${trimmed} was not found in the configured ServiceNow instance.`);
-      } else if (msg.includes('503')) {
-        setError('ServiceNow credentials are not configured. Contact your administrator.');
-      } else {
-        setError(`Failed to fetch from ServiceNow: ${msg}`);
-      }
-      setStep('idle');
-    } finally {
-      setFetching(false);
-    }
+    await fetchIncidentFromServiceNow(trimmed);
   };
 
   const confidenceColor = (score: number) =>
@@ -226,7 +268,7 @@ export default function AnalyzePage() {
           {/* Row 1: Confidence + Cluster + Problem Tag */}
           <div className="grid grid-cols-[auto_1fr_auto] gap-3 items-stretch">
             {/* Confidence */}
-            <div className="bg-white rounded-lg p-3 shadow-sm border border-slate-100 flex items-center gap-3">              
+            <div className="bg-white rounded-lg p-3 shadow-sm border border-slate-100 flex items-center gap-3">
 	    <p className={`text-2xl font-bold ${confidenceColor(result.confidence_score)}`}>
                 {(Math.min(result.confidence_score, 1) * 100).toFixed(0)}%
               </p>
@@ -332,7 +374,7 @@ export default function AnalyzePage() {
                       onClick={() => setExpandedInc(expandedInc === inc.incident_number ? null : inc.incident_number)}>
                       <td className="px-2 py-1 font-mono text-blue-600">{inc.incident_number}</td>
                       <td className="px-2 py-1 text-slate-700 truncate max-w-xs">{inc.short_description}</td>
-                      <td className="px-2 py-1 text-slate-500">{inc.cmdb_ci}</td>                      
+                      <td className="px-2 py-1 text-slate-500">{inc.cmdb_ci}</td>
 		      <td className={`px-2 py-1 text-right font-semibold ${confidenceColor(inc.similarity_score || 0)}`}>
                         {(Math.min(inc.similarity_score || 0, 1) * 100).toFixed(0)}%
                       </td>
@@ -637,8 +679,6 @@ function CollapsiblePlaybook({ title, content, grounding, sourceCount, totalSimi
     </div>
   );
 }
-
-
 
 function CopyButton({ text, label }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false);

@@ -11,13 +11,13 @@ import os
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from backend.api.database import get_pool
+from backend.api.models.kb_mapping import KbMappingRefreshRequest
 from backend.api.utils.incident_groups import group_incidents_by_period
-from backend.api.utils.sync_constants import IncidentNumber, KB_MAPPING_REFRESH_MAX
+from backend.api.utils.sync_constants import KB_MAPPING_REFRESH_MAX
 from backend.services.kb_mapping_refresh import run_kb_mapping_refresh
 from backend.services.servicenow_client import ServiceNowClient
 
@@ -28,18 +28,12 @@ limiter = Limiter(key_func=get_remote_address)
 
 KbArticleFilter = Literal["all", "synced", "not_synced"]
 
-
-class KbMappingRefreshRequest(BaseModel):
-    incident_numbers: list[IncidentNumber] = Field(..., max_length=KB_MAPPING_REFRESH_MAX)
-
-
 def _serialize_incident_row(row: dict) -> dict:
     inc = dict(row)
     opened = inc.get("opened_at")
     if opened is not None:
         inc["opened_at"] = str(opened)
     return inc
-
 
 @router.get("/kb-mappings/refresh/preview")
 async def kb_mapping_refresh_preview(
@@ -77,7 +71,6 @@ async def kb_mapping_refresh_preview(
         "total": len(incidents),
         **grouped,
     }
-
 
 @router.post("/kb-mappings/refresh")
 @limiter.limit(os.getenv("RATE_LIMIT_SYNC", "5/minute"))

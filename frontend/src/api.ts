@@ -16,6 +16,13 @@ import type {
   SyncDelta,
   SyncImportResponse,
   SyncStatus,
+  NewIncidentsPreview,
+  NewIncidentsRunResponse,
+  NewIncidentSyncConfig,
+  NewIncidentSyncConfigUpdate,
+  ClosedIncidentSyncConfig,
+  ClosedIncidentSyncConfigUpdate,
+  ClosedIncidentSyncResult,
 } from './types';
 
 export type {
@@ -45,6 +52,12 @@ export type {
   SyncImportStatus,
   SyncIncident,
   SyncStatus,
+  NewIncidentsPreview,
+  NewIncidentsRunResponse,
+  NewIncident,
+  ClosedIncidentSyncConfig,
+  ClosedIncidentSyncConfigUpdate,
+  ClosedIncidentSyncResult,
 } from './types';
 
 export const BASE = '/api/v1';
@@ -97,11 +110,10 @@ export async function del<T>(path: string): Promise<T> {
   return res.json();
 }
 
-// API methods
 export const api = {
   health: () => fetch('/health').then(r => { if (!r.ok) throw new Error(`API error: ${r.status}`); return r.json() as Promise<{ status: string; database: string; incidents_count: number }>; }),
 
-  incidents: (params?: { page?: number; page_size?: number; category?: string; cmdb_ci?: string; search?: string; kb_article?: string }) => {
+  incidents: (params?: { page?: number; page_size?: number; category?: string; cmdb_ci?: string; search?: string; kb_article?: string; state?: string; state_group?: 'closed' | 'new' }) => {
     const qs = new URLSearchParams();
     if (params?.page) qs.set('page', String(params.page));
     if (params?.page_size) qs.set('page_size', String(params.page_size));
@@ -109,6 +121,8 @@ export const api = {
     if (params?.cmdb_ci) qs.set('cmdb_ci', params.cmdb_ci);
     if (params?.search) qs.set('search', params.search);
     if (params?.kb_article?.trim()) qs.set('kb_article', params.kb_article.trim());
+    if (params?.state) qs.set('state', params.state);
+    if (params?.state_group) qs.set('state_group', params.state_group);
     return get<PaginatedResponse<Incident>>(`/incidents?${qs}`);
   },
 
@@ -185,6 +199,26 @@ export const api = {
 
   syncImport: (incident_numbers: string[]) =>
     post<SyncImportResponse>('/sync/import', { incident_numbers }),
+
+  newIncidentsPreview: () => get<NewIncidentsPreview>('/sync/new-incidents/preview'),
+
+  newIncidentsRun: (incidentNumbers: string[]) =>
+    post<NewIncidentsRunResponse>('/sync/new-incidents/run', { incident_numbers: incidentNumbers }),
+
+  newIncidentsConfigGet: () =>
+    get<NewIncidentSyncConfig>('/sync/new-incidents/config'),
+
+  newIncidentsConfigSet: (config: NewIncidentSyncConfigUpdate) =>
+    put<NewIncidentSyncConfig>('/sync/new-incidents/config', config),
+
+  closedIncidentsConfigGet: () =>
+    get<ClosedIncidentSyncConfig>('/sync/closed-incidents/config'),
+
+  closedIncidentsConfigSet: (config: ClosedIncidentSyncConfigUpdate) =>
+    put<ClosedIncidentSyncConfig>('/sync/closed-incidents/config', config),
+
+  closedIncidentsRun: (targetDate?: string) =>
+    post<ClosedIncidentSyncResult>('/sync/closed-incidents/run', targetDate ? { date: targetDate } : {}),
 
   kbMappingRefreshPreview: (hasKbFilter: KbArticleFilter = 'not_synced') =>
     get<KbMappingRefreshPreview>(`/kb-mappings/refresh/preview?has_kb_article=${hasKbFilter}`),

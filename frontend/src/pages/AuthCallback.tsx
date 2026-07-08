@@ -38,21 +38,23 @@ export default function AuthCallback() {
       if (!codeVerifier) {
         setError('Missing PKCE code verifier. Please try logging in again.');
         return;
-      }      // Clean up sessionStorage
+      }
+
+      // Clean up sessionStorage
       sessionStorage.removeItem('sso_code_verifier');
       sessionStorage.removeItem('sso_state');
 
       try {
-          setStatus('Exchanging authorization code...');
-          const data = await authApi.ssoCallback(code, codeVerifier);
-          // Set token + user directly in AuthContext — avoids a /me round-trip
-          // that can 401 if the context hasn't rehydrated yet.
-          loginWithToken(data);
-          // Replace history so back-button doesn't return to /auth/callback
-          window.location.replace('/');
-        } catch (err) {
-          setError(err instanceof Error ? err.message : 'SSO authentication failed');
-        }
+        setStatus('Exchanging authorization code...');
+        const data = await authApi.ssoCallback(code, codeVerifier);
+        // Set token + user directly in AuthContext — avoids a /me round-trip
+        // that can 401 if the context hasn't rehydrated yet.
+        loginWithToken(data);
+        // Replace history so back-button doesn't return to /auth/callback
+        window.location.replace('/');
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'SSO authentication failed');
+      }
     }
 
     handleCallback();

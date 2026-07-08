@@ -1,6 +1,6 @@
 import { Wrench, ExternalLink } from 'lucide-react';
 
-export type MaintenanceJobId = 'sn-sync' | 'kb-mapping-refresh';
+export type MaintenanceJobId = 'sn-sync' | 'kb-mapping-refresh' | 'new-incidents-sync' | 'rexus-db-sync';
 
 interface MaintenancePageProps {
   onOpenJob: (id: MaintenanceJobId) => void;
@@ -10,12 +10,22 @@ const JOBS: { id: MaintenanceJobId; title: string; description: string }[] = [
   {
     id: 'sn-sync',
     title: 'ServiceNow Sync',
-    description: 'Import closed incidents from ServiceNow into the knowledge base.',
+    description: 'Import closed incidents from ServiceNow by date range (manual historical import).',
   },
   {
     id: 'kb-mapping-refresh',
     title: 'Refresh Knowledge Article Mapping',
     description: 'Sync knowledge article links from ServiceNow for incidents in the database.',
+  },
+  {
+    id: 'new-incidents-sync',
+    title: "Sync & Analyze Today's New Incidents",
+    description: 'Sync new incidents, run REXUS analysis, and post analysis links as ServiceNow comments.',
+  },
+  {
+    id: 'rexus-db-sync',
+    title: 'REXUS DB Sync',
+    description: 'Automated scheduled sync of closed-incident updates from ServiceNow into the knowledge base.',
   },
 ];
 
