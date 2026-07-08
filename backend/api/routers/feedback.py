@@ -4,25 +4,14 @@ REX-US Feedback — voice + text feedback on analysis results.
 
 import os
 import tempfile
-from typing import Literal
 
-from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, UploadFile, File, Query
 
 from backend.api.database import get_pool
+from backend.api.models.feedback import FeedbackRequest
 from backend.api.utils.llm_provider import LLM_PROVIDER
 
 router = APIRouter(tags=["feedback"])
-
-
-class FeedbackRequest(BaseModel):
-    analysis_id: int | None = None
-    incident_number: str | None = Field(None, max_length=20)
-    feedback_text: str = Field(..., min_length=1, max_length=5000)  # SEC-009 FIX
-    feedback_type: Literal["general", "positive", "negative", "suggestion"] = "general"
-    input_method: Literal["text", "voice"] = "text"
-    rating: int | None = Field(None, ge=1, le=5)
-
 
 @router.post("/feedback")
 async def submit_feedback(req: FeedbackRequest):
@@ -37,7 +26,6 @@ async def submit_feedback(req: FeedbackRequest):
             req.feedback_text, req.input_method, req.rating,
         )
     return {"feedback_id": fid, "status": "saved"}
-
 
 @router.get("/feedback")
 async def list_feedback(
@@ -63,7 +51,6 @@ async def list_feedback(
         "pages": max(1, (total + page_size - 1) // page_size),
         "items": [dict(r) for r in rows],
     }
-
 
 # SEC-006 FIX: Audio upload with validation
 MAX_AUDIO_SIZE = 25 * 1024 * 1024  # 25MB (Whisper limit)

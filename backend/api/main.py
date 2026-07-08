@@ -51,7 +51,6 @@ async def _run_migrations() -> None:
     Each migration uses IF NOT EXISTS / IF EXISTS guards, so re-running
     is safe. This eliminates the need to manually apply migrations or
     run CLI scripts before using the UI.
-    THIS IS NOT A FULL-FEATURED MIGRATION SYSTEM — it simply runs all .sql files in the migrations directory on startup.
     """
     migrations_dir = Path(__file__).resolve().parent.parent / "migrations"
     if not migrations_dir.is_dir():
@@ -82,7 +81,11 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         # Don't crash the app if the users table doesn't exist yet
         logger.info("Skipping admin bootstrap (table may not exist yet): %s", exc)
+    from backend.api.schedulers.scheduler import start_scheduler, stop_scheduler
+
+    await start_scheduler()
     yield
+    await stop_scheduler()
     await close_pool()
 
 

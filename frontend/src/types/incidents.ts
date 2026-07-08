@@ -15,6 +15,7 @@ export interface Incident {
   cmdb_ci?: string;
   assignment_group?: string;
   assigned_to?: string;
+  opened_by?: string;
   close_notes?: string;
   close_code?: string;
   business_duration?: string;

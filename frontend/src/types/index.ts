@@ -1,5 +1,5 @@
 export type { PaginatedResponse } from './common';
-export type { Incident, KbArticleOption  } from './incidents';
+export type { Incident, KbArticleOption } from './incidents';
 export type { Cluster, Playbook } from './clusters';
 export type { KbArticle, AnalyzeResult } from './analyze';
 export type { SearchResult } from './search';
@@ -20,6 +20,15 @@ export type {
   SyncImportStatus,
   SyncImportResult,
   SyncImportResponse,
+  NewIncidentsPreview,
+  NewIncidentsRunResponse,
+  NewIncident,
+  NewIncidentSyncConfig,
+  NewIncidentSyncConfigUpdate,
+  NewIncidentSyncResult,
+  ClosedIncidentSyncConfig,
+  ClosedIncidentSyncConfigUpdate,
+  ClosedIncidentSyncResult,
 } from './sync';
 export type { Analytics } from './analytics';
 export type { AuthUser, LoginResponse, SSOConfig } from './auth';

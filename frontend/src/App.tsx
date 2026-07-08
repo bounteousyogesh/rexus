@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, BarChart3, Layers, Activity, Zap, Shield, LogOut, KeyRound, Wrench } from 'lucide-react';
+import { Search, BarChart3, Layers, Activity, Zap, Shield, LogOut, KeyRound, Wrench, ChevronDown, ChevronRight } from 'lucide-react';
 import { AuthProvider, useAuth, LOGGED_OUT_KEY } from './contexts/AuthContext';
 import { authApi } from './api';
 import type { SSOConfig } from './types';
@@ -16,9 +16,21 @@ import SyncPage from './pages/SyncPage';
 import AdminPage from './pages/Admin';
 import MaintenancePage, { type MaintenanceJobId } from './pages/MaintenancePage';
 import KbMappingRefreshPage from './pages/KbMappingRefreshPage';
+import NewIncidentsSyncPage from './pages/NewIncidentsSyncPage';
+import ClosedIncidentsSyncPage from './pages/ClosedIncidentsSyncPage';
 import ChangePassword from './pages/ChangePassword';
 
-type Page = 'dashboard' | 'analyze' | 'incidents' | 'clusters' | 'search' | 'admin' | 'maintenance' | `maintenance-${MaintenanceJobId}`;
+type Page = 'dashboard' | 'analyze' | 'incidents-closed' | 'incidents-new' | 'clusters' | 'search' | 'admin' | 'maintenance' | `maintenance-${MaintenanceJobId}`;
+
+function getIncidentDeepLink(): string | undefined {
+  const params = new URLSearchParams(window.location.search);
+  if (params.size !== 1 || !params.has('incident')) return undefined;
+
+  const incident = params.get('incident')?.trim().toUpperCase();
+  if (!incident || !/^INC\d+$/.test(incident)) return undefined;
+
+  return incident;
+}
 
 function maintenanceJobToPage(id: MaintenanceJobId): Page {
   return `maintenance-${id}`;
@@ -28,23 +40,52 @@ function isNavActive(page: Page, navId: Page): boolean {
   return navId === 'maintenance' ? page.startsWith('maintenance') : page === navId;
 }
 
-const NAV: { id: Page; label: string; icon: React.ReactNode; adminOnly?: boolean }[] = [
-  { id: 'dashboard', label: 'Dashboard', icon: <BarChart3 size={18} /> },
-  { id: 'analyze', label: 'Analyze', icon: <Zap size={18} /> },
-  { id: 'incidents', label: 'Incidents', icon: <Activity size={18} /> },
-  { id: 'clusters', label: 'Clusters', icon: <Layers size={18} /> },
-  { id: 'search', label: 'Search', icon: <Search size={18} /> },
-  { id: 'maintenance', label: 'Maintenance', icon: <Wrench size={18} /> },
-  { id: 'admin', label: 'Admin', icon: <Shield size={18} />, adminOnly: true },
+function isIncidentsPage(page: Page): boolean {
+  return page === 'incidents-closed' || page === 'incidents-new';
+}
+
+type NavItem =
+  | { type: 'link'; id: Page; label: string; icon: React.ReactNode; adminOnly?: boolean }
+  | {
+      type: 'group';
+      label: string;
+      icon: React.ReactNode;
+      children: { id: Page; label: string }[];
+    };
+
+const NAV: NavItem[] = [
+  { type: 'link', id: 'dashboard', label: 'Dashboard', icon: <BarChart3 size={18} /> },
+  { type: 'link', id: 'analyze', label: 'Analyze', icon: <Zap size={18} /> },
+  {
+    type: 'group',
+    label: 'Incidents',
+    icon: <Activity size={18} />,
+    children: [
+      { id: 'incidents-closed', label: 'Closed' },
+      { id: 'incidents-new', label: 'New' },
+    ],
+  },
+  { type: 'link', id: 'clusters', label: 'Clusters', icon: <Layers size={18} /> },
+  { type: 'link', id: 'search', label: 'Search', icon: <Search size={18} /> },
+  { type: 'link', id: 'maintenance', label: 'Maintenance', icon: <Wrench size={18} /> },
+  { type: 'link', id: 'admin', label: 'Admin', icon: <Shield size={18} />, adminOnly: true },
 ];
 
 function AuthenticatedApp() {
   const { user, logout } = useAuth();
-  const [page, setPage] = useState<Page>('dashboard');
+  const [initialIncident] = useState(() => getIncidentDeepLink());
+  const [page, setPage] = useState<Page>(() => (initialIncident ? 'analyze' : 'dashboard'));
   const [showChangePassword, setShowChangePassword] = useState(false);
+  const [incidentsExpanded, setIncidentsExpanded] = useState(true);
+
+  useEffect(() => {
+    if (isIncidentsPage(page)) {
+      setIncidentsExpanded(true);
+    }
+  }, [page]);
 
   const visibleNav = NAV.filter(
-    (item) => !item.adminOnly || user?.role === 'admin',
+    (item) => item.type === 'group' || !item.adminOnly || user?.role === 'admin',
   );
 
   return (
@@ -59,20 +100,60 @@ function AuthenticatedApp() {
           <p className="text-xs text-slate-400 mt-1">Incident Intelligence</p>
         </div>
         <nav className="flex-1 p-3 space-y-1">
-          {visibleNav.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setPage(item.id)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                isNavActive(page, item.id)
-                  ? 'bg-slate-700 text-white'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-800'
-              }`}
-            >
-              {item.icon}
-              {item.label}
-            </button>
-          ))}
+          {visibleNav.map((item) => {
+            if (item.type === 'group') {
+              const groupActive = isIncidentsPage(page);
+              return (
+                <div key={item.label} className="space-y-1">
+                  <button
+                    type="button"
+                    onClick={() => setIncidentsExpanded((expanded) => !expanded)}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                      groupActive
+                        ? 'text-white'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    {item.icon}
+                    <span className="flex-1 text-left">{item.label}</span>
+                    {incidentsExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                  </button>
+                  {incidentsExpanded && (
+                    <div className="space-y-1">
+                      {item.children.map((child) => (
+                        <button
+                          key={child.id}
+                          onClick={() => setPage(child.id)}
+                          className={`w-full flex items-center gap-3 pl-10 pr-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                            page === child.id
+                              ? 'bg-slate-700 text-white'
+                              : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                          }`}
+                        >
+                          {child.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            }
+
+            return (
+              <button
+                key={item.id}
+                onClick={() => setPage(item.id)}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                  isNavActive(page, item.id)
+                    ? 'bg-slate-700 text-white'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                }`}
+              >
+                {item.icon}
+                {item.label}
+              </button>
+            );
+          })}
         </nav>
 
         {/* User info + logout at bottom */}
@@ -101,8 +182,9 @@ function AuthenticatedApp() {
       {/* Main content */}
       <main className="flex-1 overflow-auto">
         {page === 'dashboard' && <DashboardPage />}
-        {page === 'analyze' && <AnalyzePage />}
-        {page === 'incidents' && <IncidentsPage />}
+        {page === 'analyze' && <AnalyzePage initialIncident={initialIncident} />}
+        {page === 'incidents-closed' && <IncidentsPage view="closed" />}
+        {page === 'incidents-new' && <IncidentsPage view="new" />}
         {page === 'clusters' && <ClustersPage />}
         {page === 'search' && <SearchPage />}
         {page === 'maintenance' && (
@@ -113,6 +195,12 @@ function AuthenticatedApp() {
         )}
         {page === 'maintenance-kb-mapping-refresh' && (
           <KbMappingRefreshPage onBack={() => setPage('maintenance')} />
+        )}
+        {page === 'maintenance-new-incidents-sync' && (
+          <NewIncidentsSyncPage onBack={() => setPage('maintenance')} />
+        )}
+        {page === 'maintenance-rexus-db-sync' && (
+          <ClosedIncidentsSyncPage onBack={() => setPage('maintenance')} />
         )}
         {page === 'admin' && <AdminPage />}
       </main>

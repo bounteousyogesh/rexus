@@ -10,10 +10,9 @@ import time
 import logging
 import requests
 from typing import Any
-from datetime import datetime
+from datetime import date, datetime
 
 logger = logging.getLogger(__name__)
-
 
 class ServiceNowClient:
     """OAuth 2.0 client for ServiceNow REST API."""
@@ -226,7 +225,81 @@ class ServiceNowClient:
 
         return all_incidents
 
+    def get_new_incidents(self, sync_date: date | None = None) -> list[dict[str, Any]]:
+        """Get New-state incidents opened on sync_date via the DT search API."""
+        day = (sync_date or date.today()).strftime("%Y-%m-%d")
+        return self.search_incidents(
+            start_date=f"{day} 00:00:00",
+            end_date=f"{day} 23:59:59",
+            closed_only=False,
+            incident_state="New",
+        )
+
     # ── Detailed API ──────────────────────────────────────────────────
+
+    def get_incidents_batch_detailed(
+        self,
+        target_date: str,
+        limit: int | None = None,
+    ):
+        """
+        Fetch incidents updated on a given date via DT batch detailed API.
+        GET /api/ditci/v1/servicenow/incident/batch/detailed?date=YYYY-MM-DD
+
+        Yields each incident entry (same structure as single detailed endpoint).
+        Follows cursor pagination while has_more is true.
+        """
+        batch_path = os.getenv(
+            "SERVICENOW_BATCH_PATH",
+            "/api/ditci/v1/servicenow/incident/batch/detailed",
+        )
+        page_limit = limit or int(os.getenv("SERVICENOW_BATCH_LIMIT", "25"))
+        page_limit = max(1, min(page_limit, 100))
+
+        cursor: str | None = None
+        while True:
+            params: dict[str, str] = {
+                "date": target_date,
+                "limit": str(page_limit),
+            }
+            if cursor:
+                params["cursor"] = cursor
+
+            resp = requests.get(
+                f"{self.instance_url}{batch_path}",
+                headers=self._headers(),
+                params=params,
+                timeout=self._timeout,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+
+            # Response may be top-level {success, data} or wrapped in result.
+            result = payload.get("result", payload) if isinstance(payload, dict) else {}
+            if not isinstance(result, dict):
+                break
+            if result.get("success") is False:
+                logger.warning("Batch detailed API returned success=false for %s", target_date)
+                break
+
+            data = result.get("data", {})
+            if not isinstance(data, dict):
+                break
+
+            incidents = data.get("incidents", [])
+            if isinstance(incidents, list):
+                for entry in incidents:
+                    if isinstance(entry, dict):
+                        yield entry
+
+            pagination = data.get("pagination", {})
+            if not isinstance(pagination, dict):
+                break
+            if not pagination.get("has_more"):
+                break
+            cursor = pagination.get("next_cursor")
+            if not cursor:
+                break
 
     def get_incident_detailed(self, incident_number: str, include_kb_articles: bool = True) -> dict[str, Any] | None:
         """Fetch full incident with work notes (and attached KB articles) via DT custom API."""
@@ -244,6 +317,37 @@ class ServiceNowClient:
             if data.get("result", {}).get("success"):
                 return data["result"]["data"]
         return None
+
+    def add_incident_comment(self, identifier: str, comment: str) -> bool:
+        """Append a caller-visible comment via PATCH /incident/{identifier}."""
+        comment = (comment or "").strip()
+        if not comment:
+            return False
+        resp = requests.patch(
+            f"{self.instance_url}/api/ditci/v1/servicenow/incident/{identifier}",
+            headers={**self._headers(), "Content-Type": "application/json"},
+            json={"comments": comment},
+            timeout=self._timeout,
+        )
+        if resp.status_code != 200:
+            logger.warning(
+                "Failed to add comment to %s: HTTP %s %s",
+                identifier,
+                resp.status_code,
+                resp.text[:200],
+            )
+            return False
+        body = resp.json()
+        envelope = body.get("result", body)
+        if envelope.get("success"):
+            logger.info("Posted REXUS comment on %s", identifier)
+            return True
+        logger.warning(
+            "ServiceNow rejected comment on %s: %s",
+            identifier,
+            envelope.get("message"),
+        )
+        return False
 
     def search_incident_by_number(self, incident_number: str, include_kb_articles: bool = True) -> dict[str, Any] | None:
         """Fallback: fetch a single incident via the search API (returns kb_articles too)."""
@@ -263,7 +367,7 @@ class ServiceNowClient:
         incidents = data.get("result", {}).get("data", {}).get("incidents", [])
         return incidents[0] if incidents else None
 
-    # -- Knowledge article API --
+    # ── Knowledge article API ─────────────────────────────────────────
 
     def get_knowledge_article(self, kb_number: str) -> dict[str, Any] | None:
         """
@@ -323,7 +427,7 @@ class ServiceNowClient:
 
         return None
 
-    # -- Convenience --
+    # ── Convenience ───────────────────────────────────────────────────
 
     INCIDENT_FIELDS = [
         "sys_id", "number", "short_description", "description",

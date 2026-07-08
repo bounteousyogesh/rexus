@@ -22,10 +22,15 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field, model_validator as pydantic_model_validator
 from fastapi import APIRouter, UploadFile, File, HTTPException, Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+
+from backend.api.models.analyze import (
+    AnalyzeRequest,
+    AnalyzeResponse,
+    AnalyzeTextRequest,
+)
 
 # ── Configurable constants ────────────────────────────────────────
 ORG_NAME = os.getenv("REXUS_ORG_NAME", "Discount Tire")
@@ -79,7 +84,6 @@ else:
     logger.warning(f"CMDB families config not found at {_CMDB_FAMILIES_PATH}, using empty mapping")
     CMDB_FAMILIES: dict[str, list[str]] = {}
 
-
 def get_cmdb_family(cmdb_ci: str) -> str:
     """Map a CMDB CI string to its system family name."""
     if not cmdb_ci:
@@ -90,20 +94,15 @@ def get_cmdb_family(cmdb_ci: str) -> str:
             return family
     return lower  # standalone — use as its own family
 
-
-
-
 def _json_serial(obj: object) -> str:
     """Serialize datetime/date objects for JSON encoding."""
     if isinstance(obj, (datetime, date)):
         return obj.isoformat()
     return str(obj)
 
-
 def clean_for_embedding(text: str) -> str:
     """Normalize text for embedding — QUAL-002: delegates to shared utility."""
     return _shared_clean_for_embedding(text, strict=False)
-
 
 def extract_ids_from_text(text: str) -> dict:
     """Extract order IDs, problem IDs, JIRA tickets from text."""
@@ -113,7 +112,6 @@ def extract_ids_from_text(text: str) -> dict:
         "jira_tickets": list(set(re.findall(r'\b(OPOS-\d+)\b', text, re.IGNORECASE))),
         "incident_refs": list(set(re.findall(r'\b(INC\d{7})\b', text, re.IGNORECASE))),
     }
-
 
 def build_embedding_text(ticket_json: dict) -> tuple[str, str]:
     """Extract key fields from ServiceNow JSON and build embedding text.
@@ -176,7 +174,6 @@ def build_embedding_text(ticket_json: dict) -> tuple[str, str]:
 
     return cleaned_issue, embedding_text
 
-
 # ═══════════════════════════════════════════════════════════════════
 # Focused playbook generation — from similar incidents, not clusters
 # ═══════════════════════════════════════════════════════════════════
@@ -190,7 +187,6 @@ _PROMPT_INJECT_RE = re.compile(
 
 _MAX_PROMPT_FIELD_LEN = 500
 
-
 def _sanitize_for_prompt(text: str, max_len: int = _MAX_PROMPT_FIELD_LEN) -> str:
     """
     Sanitize user-supplied text before interpolating into LLM prompts.
@@ -201,7 +197,6 @@ def _sanitize_for_prompt(text: str, max_len: int = _MAX_PROMPT_FIELD_LEN) -> str
     text = str(text)[:max_len]
     text = _PROMPT_INJECT_RE.sub("[REDACTED]", text)
     return text
-
 
 # ── CQ-005: Helper functions extracted from _generate_focused_playbook ──
 
@@ -250,7 +245,6 @@ def _build_evidence_lines(incident_details: list[dict]) -> tuple[list[str], dict
             evidence_lines.append(block)
 
     return evidence_lines, all_problem_ids, all_order_ids, all_jira, incidents_with_notes
-
 
 def _score_problems(
     all_problem_ids: dict,
@@ -303,7 +297,6 @@ def _score_problems(
 
     scored_problems.sort(key=lambda x: (-x["is_open"], -x["score"]))
     return scored_problems
-
 
 def _build_playbook_prompts(
     cleaned_issue: str,
@@ -390,7 +383,6 @@ ABSOLUTE RULES:
 
     return playbook_prompt, notes_prompt, system_prompt
 
-
 def _compute_grounding_score(evidence_count: int) -> float:
     """Map count of evidence sources (incidents with notes or KB articles with text) to a score."""
     if evidence_count >= _GROUNDING_HIGH:
@@ -400,7 +392,6 @@ def _compute_grounding_score(evidence_count: int) -> float:
     if evidence_count >= _GROUNDING_LOW:
         return 0.70
     return _GROUNDING_FLOOR
-
 
 async def _generate_focused_playbook(
     cleaned_issue: str,
@@ -494,7 +485,6 @@ async def _generate_focused_playbook(
         "playbook_source": "similar_incidents",
     }
 
-
 def _fetch_kb_pdf_from_servicenow(kb_number: str) -> bytes | None:
     """Sync: load KB PDF from ServiceNow (same client pattern as get_incident_detailed)."""
     from backend.services.servicenow_client import ServiceNowClient
@@ -522,7 +512,6 @@ def _fetch_kb_pdf_from_servicenow(kb_number: str) -> bytes | None:
     except Exception:
         return None
     return None
-
 
 async def _load_kb_article_pdf(kb_number: str) -> bytes | None:
     """KB article PDF: ServiceNow API first, kb_articles table fallback."""
@@ -552,7 +541,6 @@ async def _load_kb_article_pdf(kb_number: str) -> bytes | None:
         logger.warning("KB article %s database PDF lookup failed: %s", kb_number, e)
     return None
 
-
 async def _load_kb_article_pdf_cached(
     kb_number: str,
     pdf_cache: dict[str, bytes | None],
@@ -563,7 +551,6 @@ async def _load_kb_article_pdf_cached(
     if key not in pdf_cache:
         pdf_cache[key] = await _load_kb_article_pdf(key)
     return pdf_cache[key]
-
 
 async def _fetch_kb_article_text(
     kb_number: str,
@@ -577,7 +564,6 @@ async def _fetch_kb_article_text(
     if not extracted.strip():
         return ""
     return extracted[:_MAX_KB_TEXT_FOR_SUMMARY]
-
 
 async def _generate_kb_playbook_summary(
     cleaned_issue: str,
@@ -676,67 +662,7 @@ RULES: Only use information from the knowledge article text. Be specific and act
         "playbook_source": "knowledge_article",
     }
 
-
 # ── POST /analyze — from ServiceNow JSON ──────────────────────────
-
-class AnalyzeRequest(BaseModel):
-    ticket_json: dict
-    limit: int = Field(15, ge=1, le=50)
-    threshold: float = Field(0.40, ge=0.0, le=1.0)
-
-    @pydantic_model_validator(mode="after")
-    def _check_ticket_json_size(self):
-        """SEC-009: Limit ticket_json size to prevent DoS via oversized payloads."""
-        serialized = json.dumps(self.ticket_json, default=str)
-        if len(serialized) > 100_000:
-            raise ValueError(
-                f"ticket_json too large ({len(serialized)} chars, max 100,000). "
-                "Reduce the payload size."
-            )
-        return self
-
-
-# ENH-003: Pydantic response model for /analyze endpoint
-class ProblemInfo(BaseModel):
-    id: str
-    count: int
-    score: float
-    is_open: bool
-
-
-class FocusedPlaybookResult(BaseModel):
-    playbook: str = ""
-    notes: str = ""
-    grounding_score: float = 0.0
-    source_incident_count: int = 0
-    total_similar: int = 0
-    top_problem: Optional[ProblemInfo] = None
-    secondary_problem: Optional[ProblemInfo] = None
-    other_problems: list[str] = []
-    order_ids: list[str] = []
-    jira_tickets: list[str] = []
-
-
-class AnalyzeResponse(BaseModel):
-    """Response model for /analyze endpoint.
-
-    ENH-014: similar_incidents contains dicts with keys:
-        incident_id (int), incident_number (str), short_description (str),
-        close_notes (str|None), similarity_score (float), cluster_id (int|None),
-        cmdb_ci (str|None), category (str|None), problem_id (str|None),
-        opened_at (str|None), resolved_at (str|None).
-    """
-    analysis_id: Optional[int] = None
-    cleaned_issue: str
-    confidence_score: float
-    incident_exists: bool
-    incident_number: Optional[str] = None
-    match_count: int
-    similar_incidents: list[dict]
-    dominant_cluster: Optional[dict] = None
-    focused_playbook: dict
-    resolution_patterns: list[dict]
-
 
 @router.post("/analyze", response_model=AnalyzeResponse)
 @limiter.limit(os.getenv("RATE_LIMIT_ANALYZE", "20/minute"))
@@ -1004,14 +930,7 @@ async def analyze_ticket(request: Request, req: AnalyzeRequest):
 
     return result
 
-
 # ── POST /analyze/text — from plain text ──────────────────────────
-
-class AnalyzeTextRequest(BaseModel):
-    text: str = Field(..., min_length=3, max_length=5000)
-    limit: int = Field(15, ge=1, le=50)
-    threshold: float = Field(0.40, ge=0.0, le=1.0)
-
 
 @router.post("/analyze/text", response_model=AnalyzeResponse)
 @limiter.limit(os.getenv("RATE_LIMIT_ANALYZE", "20/minute"))
@@ -1029,7 +948,6 @@ async def analyze_text(request: Request, req: AnalyzeTextRequest):
     wrapped_req = AnalyzeRequest(ticket_json=ticket_json, limit=req.limit, threshold=req.threshold)
     return await analyze_ticket(request, wrapped_req)
 
-
 # ── ServiceNow incident fetch + analyze ──────────────────────────
 
 def _build_kb_url(number: str) -> str:
@@ -1038,7 +956,6 @@ def _build_kb_url(number: str) -> str:
     if not instance or not number:
         return ""
     return f"{instance}/kb_view.do?sysparm_article={number}"
-
 
 def _extract_kb_articles(data: dict) -> list[dict]:
     """Pull KB articles from a ServiceNow response (detailed or search shape) and add a viewable URL."""
@@ -1063,7 +980,6 @@ def _extract_kb_articles(data: dict) -> list[dict]:
         })
     return out
 
-
 def _normalize_kb_article(ka: dict) -> dict | None:
     """Normalize KB article dicts from ServiceNow, ticket JSON, or the mapping table."""
     number = (ka.get("number") or ka.get("knowledge_article_number") or "").strip()
@@ -1078,7 +994,6 @@ def _normalize_kb_article(ka: dict) -> dict | None:
         "url": ka.get("url") or _build_kb_url(number),
         "source": ka.get("source", "servicenow"),
     }
-
 
 async def _get_kb_article_fallbacks(incident_number: str) -> list[dict]:
     """Load KB article mappings from the local reference table when ServiceNow returns none."""
@@ -1114,7 +1029,6 @@ async def _get_kb_article_fallbacks(incident_number: str) -> list[dict]:
             "source": "mapping_table",
         })
     return articles
-
 
 async def _resolve_kb_articles(
     ticket_kb: list,
@@ -1152,7 +1066,6 @@ async def _resolve_kb_articles(
                 art.pop("pdf_base64", None)
 
     return articles
-
 
 async def _build_ticket_json_from_sn(data: dict, incident_number: str) -> dict:
     """Convert ServiceNow detailed API response to ticket_json format."""
@@ -1213,7 +1126,6 @@ async def _build_ticket_json_from_sn(data: dict, incident_number: str) -> dict:
         "kb_articles": kb_articles,
     }
 
-
 @router.get("/fetch-incident/{incident_number}")
 @limiter.limit(os.getenv("RATE_LIMIT_ANALYZE", "20/minute"))
 async def fetch_from_servicenow(request: Request, incident_number: str):
@@ -1235,7 +1147,6 @@ async def fetch_from_servicenow(request: Request, incident_number: str):
         raise HTTPException(404, f"Incident {incident_number} not found in ServiceNow")
 
     return await _build_ticket_json_from_sn(data, incident_number)
-
 
 @router.post("/analyze/incident/{incident_number}", response_model=AnalyzeResponse)
 @limiter.limit(os.getenv("RATE_LIMIT_ANALYZE", "20/minute"))
@@ -1261,7 +1172,6 @@ async def analyze_from_servicenow(request: Request, incident_number: str,
     ticket_json = await _build_ticket_json_from_sn(data, incident_number)
     wrapped_req = AnalyzeRequest(ticket_json=ticket_json, limit=limit, threshold=threshold)
     return await analyze_ticket(request, wrapped_req)
-
 
 # ── POST /parse-pdf — upload PDF, return JSON ─────────────────────
 

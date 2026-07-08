@@ -1,12 +1,12 @@
+from datetime import date
+
 from fastapi import APIRouter, Query, HTTPException
 from backend.api.database import get_pool
 
 router = APIRouter(tags=["incidents"])
 
-
 def _kb_incident_match(alias: str) -> str:
     return f"UPPER(TRIM(m.incident_number)) = UPPER(TRIM({alias}.incident_number))"
-
 
 # Pre-aggregated KA numbers per incident — joined once instead of a per-row subquery.
 _KB_ARTICLE_NUMBERS_JOIN = """
@@ -24,7 +24,6 @@ _KB_ARTICLE_NUMBERS_SELECT = (
     "CASE WHEN i.has_kb_article = TRUE THEN kb.kb_article_numbers END AS kb_article_numbers"
 )
 
-
 def _kb_filter_join(param_idx: int) -> str:
     return f"""
 INNER JOIN rexus_kb_article_incident_mapping m_filter
@@ -32,6 +31,67 @@ INNER JOIN rexus_kb_article_incident_mapping m_filter
  AND UPPER(TRIM(m_filter.knowledge_article_number)) = UPPER(TRIM(${param_idx}))
 """
 
+async def _list_new_incidents(
+    conn,
+    *,
+    page: int,
+    page_size: int,
+    search: str | None,
+) -> dict:
+    """Paginated list from rexus_incidents_new for the latest sync_date."""
+    sync_date = await conn.fetchval(
+        "SELECT MAX(sync_date) FROM rexus_incidents_new"
+    )
+    if not sync_date:
+        return {
+            "total": 0,
+            "page": page,
+            "page_size": page_size,
+            "pages": 1,
+            "sync_date": date.today().isoformat(),
+            "items": [],
+        }
+
+    conditions = ["i.sync_date = $1"]
+    params: list = [sync_date]
+    idx = 2
+
+    if search:
+        conditions.append(
+            f"(i.incident_number ILIKE ${idx} OR i.short_description ILIKE ${idx} "
+            f"OR i.cmdb_ci ILIKE ${idx} OR i.category ILIKE ${idx} "
+            f"OR i.assignment_group ILIKE ${idx})"
+        )
+        params.append(f"%{search}%")
+        idx += 1
+
+    where = f"WHERE {' AND '.join(conditions)}"
+    offset = (page - 1) * page_size
+
+    total = await conn.fetchval(
+        f"SELECT COUNT(*) FROM rexus_incidents_new i {where}", *params
+    )
+    rows = await conn.fetch(
+        f"""SELECT i.id, i.incident_number, i.short_description, i.category, i.priority, i.state,
+                   i.cmdb_ci, i.assignment_group, i.assigned_to, i.opened_by, i.opened_at,
+                   i.has_kb_article,
+                   CASE WHEN i.has_kb_article = TRUE THEN kb.kb_article_numbers END AS kb_article_numbers
+            FROM rexus_incidents_new i
+            {_KB_ARTICLE_NUMBERS_JOIN}
+            {where}
+            ORDER BY i.opened_at DESC NULLS LAST, i.incident_number
+            LIMIT ${idx} OFFSET ${idx + 1}""",
+        *params, page_size, offset,
+    )
+
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": max(1, (total + page_size - 1) // page_size),
+        "sync_date": sync_date.isoformat(),
+        "items": [dict(r) for r in rows],
+    }
 
 @router.get("/incidents")
 async def list_incidents(
@@ -40,11 +100,19 @@ async def list_incidents(
     category: str | None = None,
     cmdb_ci: str | None = None,
     state: str | None = None,
+    state_group: str | None = None,
     assignment_group: str | None = None,
     search: str | None = None,
     kb_article: str | None = None,
 ):
     pool = await get_pool()
+
+    if state_group == "new":
+        async with pool.acquire() as conn:
+            return await _list_new_incidents(
+                conn, page=page, page_size=page_size, search=search,
+            )
+
     offset = (page - 1) * page_size
 
     conditions = []
@@ -109,7 +177,6 @@ async def list_incidents(
         "items": [dict(r) for r in rows],
     }
 
-
 @router.get("/incidents/kb-articles")
 async def list_incident_kb_articles():
     """Distinct KA numbers linked to incidents with has_kb_article = TRUE."""
@@ -124,7 +191,6 @@ async def list_incident_kb_articles():
                ORDER BY m.knowledge_article_number"""
         )
     return {"items": [dict(r) for r in rows]}
-
 
 @router.get("/incidents/{incident_number}")
 async def get_incident(incident_number: str):

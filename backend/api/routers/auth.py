@@ -9,7 +9,6 @@ import logging
 
 import requests as http_requests
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
 
 from backend.api.auth import (
     create_token,
@@ -17,6 +16,14 @@ from backend.api.auth import (
     hash_password,
     require_admin,
     verify_password,
+)
+from backend.api.models.auth import (
+    ChangePasswordRequest,
+    CreateUserRequest,
+    LoginRequest,
+    LoginResponse,
+    SSOCallbackRequest,
+    UpdateUserRequest,
 )
 from backend.api.config import (
     SSO_AUDIENCE,
@@ -31,38 +38,6 @@ from backend.api.database import get_pool
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-
-
-# ── Request / Response Models ──────────────────────────────────────
-
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-
-class LoginResponse(BaseModel):
-    token: str
-    user: dict
-
-
-class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str = Field(min_length=8)
-
-
-class CreateUserRequest(BaseModel):
-    username: str = Field(min_length=2, max_length=50)
-    password: str = Field(min_length=8)
-    email: str | None = None
-    role: str = "analyst"
-
-
-class UpdateUserRequest(BaseModel):
-    email: str | None = None
-    role: str | None = None
-    is_active: bool | None = None
-    password: str | None = None  # admin can reset password
-
 
 # ── Endpoints ──────────────────────────────────────────────────────
 
@@ -95,7 +70,6 @@ async def login(body: LoginRequest):
         "user": {"id": row["id"], "username": row["username"], "role": row["role"]},
     }
 
-
 @router.get("/me")
 async def me(user: dict = Depends(get_current_user)):
     """Return the currently authenticated user's profile."""
@@ -108,7 +82,6 @@ async def me(user: dict = Depends(get_current_user)):
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
     return dict(row)
-
 
 @router.put("/change-password")
 async def change_password(
@@ -134,7 +107,6 @@ async def change_password(
     )
     return {"status": "Password changed successfully"}
 
-
 @router.get("/users")
 async def list_users(admin: dict = Depends(require_admin)):
     """List all users (admin only)."""
@@ -144,7 +116,6 @@ async def list_users(admin: dict = Depends(require_admin)):
         "FROM rexus_users ORDER BY id"
     )
     return [dict(r) for r in rows]
-
 
 @router.post("/users")
 async def create_user(body: CreateUserRequest, admin: dict = Depends(require_admin)):
@@ -171,7 +142,6 @@ async def create_user(body: CreateUserRequest, admin: dict = Depends(require_adm
         body.role,
     )
     return dict(row)
-
 
 @router.put("/users/{user_id}")
 async def update_user(
@@ -220,7 +190,6 @@ async def update_user(
     row = await pool.fetchrow(query, *values)
     return dict(row)
 
-
 @router.delete("/users/{user_id}")
 async def deactivate_user(
     user_id: int,
@@ -240,13 +209,7 @@ async def deactivate_user(
     )
     return {"status": "User deactivated"}
 
-
 # ── SSO (Okta OIDC / PKCE) ──────────────────────────────────────
-
-class SSOCallbackRequest(BaseModel):
-    code: str
-    code_verifier: str
-
 
 @router.get("/sso/config")
 async def sso_config():
@@ -262,7 +225,6 @@ async def sso_config():
         "redirect_uri": SSO_REDIRECT_URI,
         "audience": SSO_AUDIENCE,
     }
-
 
 @router.post("/sso/callback")
 async def sso_callback(body: SSOCallbackRequest):

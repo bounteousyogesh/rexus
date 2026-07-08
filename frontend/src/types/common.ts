@@ -4,4 +4,5 @@ export interface PaginatedResponse<T> {
   page_size: number;
   pages: number;
   items: T[];
+  sync_date?: string;
 }
