@@ -393,6 +393,66 @@ def _compute_grounding_score(evidence_count: int) -> float:
         return 0.70
     return _GROUNDING_FLOOR
 
+
+def _llm_error_summary(exc: Exception) -> str:
+    """Short user-facing reason when LLM calls fail."""
+    message = str(exc)
+    if "Zscaler" in message or "PermissionDenied" in type(exc).__name__:
+        return "corporate network blocked OpenAI chat API"
+    if "CERTIFICATE_VERIFY_FAILED" in message or "APIConnectionError" in type(exc).__name__:
+        return "OpenAI connection failed (check OPENAI_SSL_VERIFY or network)"
+    return type(exc).__name__
+
+
+def _build_fallback_playbook(
+    cluster_name: str,
+    incident_details: list[dict],
+    top_problem: dict | None,
+    llm_error: str,
+) -> tuple[str, str]:
+    """Evidence-based playbook when LLM generation is unavailable."""
+    similar_with_notes = [
+        inc for inc in incident_details
+        if inc.get("close_notes") and len(inc["close_notes"].strip()) > 5
+    ][:5]
+
+    inc_refs = ", ".join(f"[{inc['incident_number']}]" for inc in similar_with_notes) or "N/A"
+
+    playbook = (
+        f"## Playbook: {_sanitize_for_prompt(cluster_name, 120)}\n\n"
+        f"**Pattern:** Based on {len(incident_details)} similar incident(s) in the knowledge base.\n\n"
+        f"**Most Likely Fix:** Review resolutions from similar incidents: {inc_refs}.\n\n"
+        "**Step-by-Step:**\n"
+    )
+    if similar_with_notes:
+        for i, inc in enumerate(similar_with_notes[:3], 1):
+            note = inc["close_notes"].strip().split("\n")[0][:200]
+            playbook += f"{i}. {note} [{inc['incident_number']}].\n"
+    else:
+        playbook += "1. Review similar incidents listed below for matching symptoms.\n"
+
+    playbook += (
+        "\n**If That Doesn't Work:** Expand review to additional similar incidents "
+        "or escalate to the owning support group.\n"
+    )
+    if top_problem:
+        playbook += (
+            f"\n**Tag Problem:** Consider linking to {top_problem['id']} "
+            f"({top_problem['count']} similar incidents).\n"
+        )
+    playbook += (
+        f"\n_Note: AI playbook generation was unavailable ({llm_error}). "
+        "Showing evidence-based summary from similar incidents._\n"
+    )
+
+    notes = "\n\n".join(
+        f"### {inc['incident_number']} ({inc.get('similarity_score', 0):.0%} match)\n"
+        f"{inc['close_notes'].strip()}"
+        for inc in similar_with_notes
+    )
+    return playbook, notes
+
+
 async def _generate_focused_playbook(
     cleaned_issue: str,
     incident_details: list[dict],
@@ -455,21 +515,30 @@ async def _generate_focused_playbook(
         messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": notes_prompt}],
         max_tokens=3000, temperature=0.1,
     )
-    playbook_resp, notes_resp = await asyncio.gather(playbook_coro, notes_coro)
 
-    playbook_content = playbook_resp.choices[0].message.content or ""
-    notes_content = notes_resp.choices[0].message.content or ""
+    playbook_content = ""
+    notes_content = ""
+    playbook_source = "similar_incidents"
+    try:
+        playbook_resp, notes_resp = await asyncio.gather(playbook_coro, notes_coro)
+        playbook_content = playbook_resp.choices[0].message.content or ""
+        notes_content = notes_resp.choices[0].message.content or ""
 
-    # Track completion token usage
-    if pool:
-        pb_usage = playbook_resp.usage
-        nt_usage = notes_resp.usage
-        await track_usage(pool, "completion", model,
-                          pb_usage.prompt_tokens, pb_usage.completion_tokens,
-                          endpoint="/analyze-playbook")
-        await track_usage(pool, "completion", model,
-                          nt_usage.prompt_tokens, nt_usage.completion_tokens,
-                          endpoint="/analyze-notes")
+        if pool:
+            pb_usage = playbook_resp.usage
+            nt_usage = notes_resp.usage
+            await track_usage(pool, "completion", model,
+                              pb_usage.prompt_tokens, pb_usage.completion_tokens,
+                              endpoint="/analyze-playbook")
+            await track_usage(pool, "completion", model,
+                              nt_usage.prompt_tokens, nt_usage.completion_tokens,
+                              endpoint="/analyze-notes")
+    except Exception as exc:
+        logger.warning("LLM playbook generation failed, using evidence fallback: %s", exc)
+        playbook_source = "evidence_fallback"
+        playbook_content, notes_content = _build_fallback_playbook(
+            cluster_name, incident_details, top_problem, _llm_error_summary(exc),
+        )
 
     return {
         "playbook": playbook_content,
@@ -482,7 +551,7 @@ async def _generate_focused_playbook(
         "other_problems": remaining_problems,
         "order_ids": unique_orders[:20],
         "jira_tickets": unique_jira,
-        "playbook_source": "similar_incidents",
+        "playbook_source": playbook_source,
     }
 
 def _fetch_kb_pdf_from_servicenow(kb_number: str) -> bytes | None:
@@ -675,7 +744,14 @@ async def analyze_ticket(request: Request, req: AnalyzeRequest):
     incident_section = req.ticket_json.get("incident_section", {})
     incident_number = incident_section.get("Number", "") or req.ticket_json.get("incident_number", "")
 
-    embedding = await embed_text(embedding_text)
+    try:
+        embedding = await embed_text(embedding_text)
+    except Exception as exc:
+        logger.error("Embedding failed for analyze: %s", exc)
+        raise HTTPException(
+            503,
+            f"OpenAI embedding unavailable: {_llm_error_summary(exc)}",
+        ) from exc
     embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
 
     pool = await get_pool()

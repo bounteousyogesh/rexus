@@ -18,11 +18,7 @@ import pytest
 import httpx
 
 from backend.api.routers.sync import filter_incidents_by_opened_date
-from backend.api.routers.sync.sync import (
-    INCIDENT_ROW_COLUMNS,
-    UPSERT_V3_SQL,
-    is_closed_incident,
-)
+from backend.api.routers.sync.sync import INCIDENT_ROW_COLUMNS, UPSERT_V3_SQL, is_incident_state
 from backend.api.utils.sync_constants import SYNC_IMPORT_MAX
 from backend.services.servicenow_client import ServiceNowClient
 
@@ -52,10 +48,12 @@ def test_filter_incidents_by_opened_date_enforces_requested_range():
         for incident in filtered
     ] == ["INC0000002", "INC0000003", "INC0000006"]
 
-def test_is_closed_incident_detects_closed_state():
-    assert is_closed_incident({"incident": {"incident_state_display": "Closed"}})
-    assert is_closed_incident({"incident": {"incident_state_display": "7 - Closed"}})
-    assert not is_closed_incident({"incident": {"incident_state_display": "New"}})
+def test_is_incident_state_detects_closed_and_new():
+    assert is_incident_state({"incident": {"incident_state_display": "Closed"}}, "closed")
+    assert is_incident_state({"incident": {"incident_state_display": "7 - Closed"}}, "closed")
+    assert not is_incident_state({"incident": {"incident_state_display": "New"}}, "closed")
+    assert is_incident_state({"incident_state_display": "New"}, "new")
+    assert not is_incident_state({"incident_state_display": "In Progress"}, "new")
 
 def test_upsert_v3_sql_updates_all_columns_on_conflict():
     for col in INCIDENT_ROW_COLUMNS:

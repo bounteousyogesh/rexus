@@ -124,7 +124,7 @@ class ServiceNowClient:
         self,
         start_date: str | None = None,
         end_date: str | None = None,
-        closed_only: bool = True,
+        closed_only: bool | None = None,
         **filters,
     ) -> list[dict[str, Any]]:
         """
@@ -134,7 +134,7 @@ class ServiceNowClient:
         Date params:
             start_date: YYYY-MM-DD (required for date range queries)
             end_date: YYYY-MM-DD (required for date range queries)
-            closed_only: true/false (default true)
+            closed_only: true/false; omitted when None (API default applies)
 
         Filter params (ANDed together):
             category, subcategory, incident_state, caller_id,
@@ -151,7 +151,8 @@ class ServiceNowClient:
             params["start_date"] = start_date
         if end_date:
             params["end_date"] = end_date
-        params["closed_only"] = str(closed_only).lower()
+        if closed_only is not None:
+            params["closed_only"] = str(closed_only).lower()
 
         # Add any additional filters
         for k, v in filters.items():
@@ -225,14 +226,42 @@ class ServiceNowClient:
 
         return all_incidents
 
-    def get_new_incidents(self, sync_date: date | None = None) -> list[dict[str, Any]]:
-        """Get New-state incidents opened on sync_date via the DT search API."""
-        day = (sync_date or date.today()).strftime("%Y-%m-%d")
+    def get_new_incidents(
+        self,
+        sync_date: date | None = None,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Search incidents in a date window via the DT search API.
+
+        Pass either a calendar day (sync_date) or an explicit datetime window
+        (start/end). Datetime window takes precedence when both are provided.
+        New-state filtering is applied by the sync router via is_incident_state.
+        """
+        if start is not None and end is not None:
+            start_str = start.strftime("%Y-%m-%d %H:%M:%S")
+            end_str = end.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            day = (sync_date or date.today()).strftime("%Y-%m-%d")
+            start_str = f"{day} 00:00:00"
+            end_str = f"{day} 23:59:59"
+        raw = self.search_incidents(
+            start_date=start_str,
+            end_date=end_str,
+        )
+        return raw
+
+    def search_closed_incidents_window(
+        self,
+        start: datetime,
+        end: datetime,
+    ) -> list[dict[str, Any]]:
+        """Discover closed/resolved incidents updated in a datetime window."""
         return self.search_incidents(
-            start_date=f"{day} 00:00:00",
-            end_date=f"{day} 23:59:59",
-            closed_only=False,
-            incident_state="New",
+            start_date=start.strftime("%Y-%m-%d %H:%M:%S"),
+            end_date=end.strftime("%Y-%m-%d %H:%M:%S"),
+            closed_only=True,
         )
 
     # ── Detailed API ──────────────────────────────────────────────────

@@ -243,21 +243,55 @@ async def _bedrock_embed(model, text):
 # ═══════════════════════════════════════════════════════════════════
 
 _openai_client = None
+_openai_http_client = None
+
+
+def _openai_ssl_verify() -> bool | str:
+    """Resolve SSL verification setting for the OpenAI httpx client."""
+    verify_env = os.getenv("OPENAI_SSL_VERIFY")
+    if verify_env is not None:
+        normalized = verify_env.strip().lower()
+        if normalized in ("0", "false", "no"):
+            return False
+        if normalized not in ("1", "true", "yes"):
+            return verify_env.strip()
+
+    cert_file = os.getenv("SSL_CERT_FILE") or os.getenv("REQUESTS_CA_BUNDLE")
+    if cert_file:
+        return cert_file
+
+    try:
+        import certifi
+        return certifi.where()
+    except ImportError:
+        return True
 
 
 def _get_openai_client():
     """Lazy-init OpenAI client."""
-    global _openai_client
+    global _openai_client, _openai_http_client
     if _openai_client is None:
+        import httpx
         from openai import AsyncOpenAI
+
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             logger.warning(
                 "OPENAI_API_KEY is not set — LLM features will not work. "
                 "Set LLM_PROVIDER=bedrock for AWS production deployments."
             )
-        _openai_client = AsyncOpenAI(api_key=api_key)
-        logger.info(f"OpenAI client initialized")
+
+        verify = _openai_ssl_verify()
+        if verify is False:
+            logger.warning(
+                "OPENAI_SSL_VERIFY is disabled — HTTPS certificates will not be verified"
+            )
+        else:
+            logger.info("OpenAI SSL verification enabled (verify=%s)", verify)
+
+        _openai_http_client = httpx.AsyncClient(verify=verify)
+        _openai_client = AsyncOpenAI(api_key=api_key, http_client=_openai_http_client)
+        logger.info("OpenAI client initialized")
     return _openai_client
 
 

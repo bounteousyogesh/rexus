@@ -2,6 +2,7 @@
 
 import os
 
+_SIMILAR_INCIDENTS_SHOWN = 5
 
 def rexus_public_url() -> str:
     url = (os.getenv("REXUS_PUBLIC_URL") or "").strip().rstrip("/")
@@ -9,17 +10,41 @@ def rexus_public_url() -> str:
         raise ValueError("REXUS_PUBLIC_URL is not set in the environment")
     return url
 
+def _format_similar_incidents(similar_incident_numbers: list[str], match_count: int) -> str:
+    instance = (os.getenv("SERVICENOW_INSTANCE") or "").strip().rstrip("/")
+    shown = [n.strip().upper() for n in similar_incident_numbers if n and n.strip()][:_SIMILAR_INCIDENTS_SHOWN]
+    if not shown:
+        return "None found"
+
+    links = [
+        f'<a href="{instance}/nav_to.do?uri=incident.do?sysparm_query=number={n}">{n}</a>' if instance else n
+        for n in shown
+    ]
+    extra = match_count - len(shown)
+    suffix = f" (+{extra} more in REXUS)" if extra > 0 else ""
+    return ", ".join(links) + suffix
 
 def build_rexus_analysis_comment(
     incident_number: str,
     confidence_score: float,
+    *,
+    match_count: int = 0,
+    similar_incident_numbers: list[str] | None = None,
 ) -> str:
-    """Three-line briefing posted to ServiceNow after sync-and-analyze."""
+    """Four-line briefing posted to ServiceNow after sync-and-analyze."""
     inc = (incident_number or "").strip().upper()
     pct = round(min(max(confidence_score, 0.0), 1.0) * 100)
-    url = f"{rexus_public_url()}/?incident={inc}"
+    rexus_url = f"{rexus_public_url()}/?incident={inc}"
+
+    numbers = similar_incident_numbers or []
+    count = match_count if match_count > 0 else len(numbers)
+    incident_word = "incident" if count == 1 else "incidents"
+    similar_text = _format_similar_incidents(numbers, count)
+
     return (
-        f"<b>[REXUS] Pre-triage intelligence available ({pct}% match).</b>\n"
-        "Relevant historical resolutions and knowledge guidance have already been mapped to this incident.\n"
-        f"<b>Expected First Step: </b>Review REXUS findings manual investigation🔗{url}"
+        f"<b>[REXUS] Pre-triage intelligence available: Found {count} similar "
+        f"{incident_word} ({pct}% match).</b>\n"
+        "Prior resolutions, playbook actions, and KA/KB guidance are already available.\n"
+        f"<b>Review REXUS findings before starting triage. Similar Incidents:</b> {similar_text}\n"
+        f"🔗{rexus_url}"
     )

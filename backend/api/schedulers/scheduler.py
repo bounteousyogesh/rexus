@@ -6,11 +6,12 @@ Registers closed-incident and new-incident jobs from this package.
 
 import asyncio
 import logging
+from datetime import timezone
 
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_MISSED
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from backend.api.utils.time_utils import to_naive_utc, utc_now_naive
+from backend.api.utils.time_utils import utc_now_naive
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ async def start_scheduler() -> AsyncIOScheduler:
     from backend.api.schedulers.closed_incident import register_job as register_closed_incident
     from backend.api.schedulers.new_incident import register_job as register_new_incident
 
-    _scheduler = AsyncIOScheduler()
+    _scheduler = AsyncIOScheduler(timezone=timezone.utc)
     _scheduler.add_listener(_on_scheduler_event, EVENT_JOB_EXECUTED | EVENT_JOB_MISSED)
     _scheduler.start()
     await register_closed_incident(_scheduler)

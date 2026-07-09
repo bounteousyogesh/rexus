@@ -56,7 +56,7 @@ def _detailed_payload(opened_date: str | None = None) -> dict:
         "notes": {},
     }
 
-def test_get_new_incidents_calls_search_api():
+def test_get_new_incidents_calls_search_api_with_dates_only():
     client = ServiceNowClient(
         instance_url="https://example.service-now.com",
         client_id="client-id",
@@ -66,11 +66,43 @@ def test_get_new_incidents_calls_search_api():
     with patch.object(client, "search_incidents", return_value=[]) as search_mock:
         assert client.get_new_incidents() == []
     search_mock.assert_called_once_with(
-        start_date=today,
+        start_date=f"{today} 00:00:00",
         end_date=f"{today} 23:59:59",
-        closed_only=False,
-        incident_state="New",
     )
+
+
+def test_get_new_incidents_filters_non_new_state():
+    client = ServiceNowClient(
+        instance_url="https://example.service-now.com",
+        client_id="client-id",
+        client_secret="client-secret",
+    )
+    raw = [
+        {"number": "INC0000001", "incident_state_display": "New"},
+        {"number": "INC0000002", "incident_state_display": "In Progress"},
+    ]
+    with patch.object(client, "search_incidents", return_value=raw):
+        assert len(client.get_new_incidents()) == 2
+
+
+@pytest.mark.asyncio
+async def test_get_new_incidents_router_filters_non_new_state(monkeypatch):
+    raw = [
+        {"number": "INC0000001", "incident_state_display": "New"},
+        {"number": "INC0000002", "incident_state_display": "In Progress"},
+    ]
+    monkeypatch.setattr(
+        "backend.api.routers.sync.new_incident.ServiceNowClient",
+        lambda: MagicMock(get_new_incidents=lambda *a, **k: raw),
+    )
+    monkeypatch.setattr(
+        "backend.api.routers.sync.new_incident.asyncio.to_thread",
+        AsyncMock(side_effect=lambda fn, *args, **kwargs: fn(*args) if callable(fn) else fn),
+    )
+
+    incidents = await _get_new_incidents()
+    assert len(incidents) == 1
+    assert incidents[0]["incident_number"] == "INC0000001"
 
 
 @pytest.mark.asyncio
@@ -83,11 +115,11 @@ async def test_get_new_incidents_router_maps_search_results(monkeypatch):
     }]
     monkeypatch.setattr(
         "backend.api.routers.sync.new_incident.ServiceNowClient",
-        lambda: MagicMock(get_new_incidents=lambda _sync_date=None: raw),
+        lambda: MagicMock(get_new_incidents=lambda *a, **k: raw),
     )
     monkeypatch.setattr(
         "backend.api.routers.sync.new_incident.asyncio.to_thread",
-        AsyncMock(side_effect=lambda fn, *args: fn(*args)),
+        AsyncMock(side_effect=lambda fn, *args, **kwargs: fn(*args) if callable(fn) else fn),
     )
 
     incidents = await _get_new_incidents()

@@ -1,20 +1,20 @@
 """
-Daily new-incident sync: search for preview, detailed API for database upsert.
+New-incident sync: search for preview, detailed API for database upsert.
 
 Endpoints:
   GET  /sync/new-incidents/config  — Job schedule + last-run status
-  PUT  /sync/new-incidents/config  — Update enabled + interval_hours
-  GET  /sync/new-incidents/preview — Search today's New-state incidents (basic fields)
+  PUT  /sync/new-incidents/config  — Update enabled + interval_hours + start_at
+  GET  /sync/new-incidents/preview — Search New-state incidents in a date range
   POST /sync/new-incidents/run     — Sync, analyze, and post REXUS comment on each incident
 """
 
 import os
 import asyncio
 import logging
-from datetime import date
+from datetime import date, datetime, time
 from types import SimpleNamespace
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from backend.api.database import get_pool
 from backend.api.models.analyze import AnalyzeRequest
@@ -35,7 +35,7 @@ from .sync import (
     batch_upsert_snapshots,
     enrich_incident_row,
     fetch_incidents_detailed,
-    filter_incidents_by_opened_date,
+    is_incident_state,
     limiter,
     map_detailed_to_row,
     map_search_incident,
@@ -87,6 +87,12 @@ async def _analyze_and_comment(
             comment = build_rexus_analysis_comment(
                 inc_num,
                 analyze_result.get("confidence_score", 0.0),
+                match_count=analyze_result.get("match_count", 0),
+                similar_incident_numbers=[
+                    similar.get("incident_number", "")
+                    for similar in analyze_result.get("similar_incidents", [])
+                    if similar.get("incident_number")
+                ],
             )
             posted = await asyncio.to_thread(sn_client.add_incident_comment, inc_num, comment)
             if posted:
@@ -101,18 +107,38 @@ async def _analyze_and_comment(
     return comments_posted, comments_failed
 
 
-async def _get_new_incidents(sync_date: date | None = None) -> list[dict]:
-    """Get New-state incidents opened on sync_date from ServiceNow."""
-    sync_date = sync_date or date.today()
+def _day_bounds(start_date: date, end_date: date) -> tuple[datetime, datetime]:
+    return (
+        datetime.combine(start_date, time.min),
+        datetime.combine(end_date, time(23, 59, 59)),
+    )
+
+
+async def _get_new_incidents(
+    *,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> list[dict]:
+    """Get New-state incidents from ServiceNow for a datetime or calendar-date window."""
     try:
         client = ServiceNowClient()
     except ValueError:
         raise HTTPException(503, "ServiceNow credentials not configured")
 
-    day = sync_date.isoformat()
-    raw = await asyncio.to_thread(client.get_new_incidents, sync_date)
+    if start is None or end is None:
+        start_date = start_date or date.today()
+        end_date = end_date or start_date
+        start, end = _day_bounds(start_date, end_date)
+
+    raw = await asyncio.to_thread(
+        lambda: client.get_new_incidents(start=start, end=end),
+    )
     incidents = []
-    for inc in filter_incidents_by_opened_date(raw, day, day):
+    for inc in raw:
+        if not is_incident_state(inc, "new"):
+            continue
         mapped = map_search_incident(inc, default_state="New")
         if mapped:
             incidents.append(mapped)
@@ -134,18 +160,61 @@ async def _db_stats(conn, sync_date: date) -> dict:
     }
 
 
+async def _db_stats_range(conn, start_date: date, end_date: date) -> dict:
+    row = await conn.fetchrow(
+        """
+        SELECT COUNT(*)::int AS db_count, MAX(synced_at) AS last_synced_at
+        FROM rexus_incidents_new
+        WHERE sync_date >= $1 AND sync_date <= $2
+        """,
+        start_date,
+        end_date,
+    )
+    last = row["last_synced_at"]
+    return {
+        "db_count": row["db_count"] or 0,
+        "last_synced_at": last.isoformat() if last else None,
+    }
+
+
+def _incident_sync_date(row: dict, fallback: date) -> date:
+    opened = (row.get("opened_at") or "")[:10]
+    if opened:
+        try:
+            return date.fromisoformat(opened)
+        except ValueError:
+            pass
+    return fallback
+
+
 async def run_new_incident_sync(
     *,
     trigger: str = "manual",
     incident_numbers: list[str] | None = None,
     request: Request | None = None,
     use_lock: bool = True,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
 ) -> dict:
     """Fetch new incidents, upsert snapshots, analyze, and post ServiceNow comments."""
     run_at = utc_now_naive()
-    sync_date = date.today()
+
+    if window_start is None or window_end is None:
+        start_date = start_date or date.today()
+        end_date = end_date or start_date
+        window_start, window_end = _day_bounds(start_date, end_date)
+    else:
+        start_date = window_start.date()
+        end_date = window_end.date()
+
     summary = {
-        "sync_date": sync_date.isoformat(),
+        "sync_date": end_date.isoformat(),
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "window_start": window_start.isoformat(),
+        "window_end": window_end.isoformat(),
         "trigger": trigger,
         "inserted": 0,
         "updated": 0,
@@ -169,7 +238,11 @@ async def run_new_incident_sync(
                 pool,
                 conn,
                 run_at=run_at,
-                sync_date=sync_date,
+                sync_date=end_date,
+                start_date=start_date,
+                end_date=end_date,
+                window_start=window_start,
+                window_end=window_end,
                 summary=summary,
                 trigger=trigger,
                 incident_numbers=incident_numbers,
@@ -180,12 +253,21 @@ async def run_new_incident_sync(
                 await conn.execute("SELECT pg_advisory_unlock($1)", ADVISORY_LOCK_ID)
 
 
+async def _persist_scheduled_status(conn, run_at, status: str, result: dict, trigger: str) -> None:
+    if trigger == "scheduled":
+        await update_sync_run_status(conn, JOB_NAME, run_at, status, result)
+
+
 async def _run_new_incident_sync_body(
     pool,
     conn,
     *,
     run_at,
     sync_date: date,
+    start_date: date,
+    end_date: date,
+    window_start: datetime,
+    window_end: datetime,
     summary: dict,
     trigger: str,
     incident_numbers: list[str] | None,
@@ -193,10 +275,10 @@ async def _run_new_incident_sync_body(
 ) -> dict:
     if incident_numbers is None:
         try:
-            incidents = await _get_new_incidents(sync_date)
+            incidents = await _get_new_incidents(start=window_start, end=window_end)
         except HTTPException as exc:
             result = {**summary, "status": "error", "error": str(exc.detail)[:500]}
-            await update_sync_run_status(conn, JOB_NAME, run_at, "error", result)
+            await _persist_scheduled_status(conn, run_at, "error", result, trigger)
             if trigger == "scheduled":
                 logger.warning("Skipping scheduled new-incidents sync: ServiceNow not configured")
                 return result
@@ -205,18 +287,17 @@ async def _run_new_incident_sync_body(
 
     if not incident_numbers:
         summary["status"] = "success"
-        db_stats = await _db_stats(conn, sync_date)
-        await update_sync_run_status(conn, JOB_NAME, run_at, summary["status"], {**summary, **db_stats})
-        if trigger == "manual":
-            from backend.api.schedulers.new_incident import refresh_next_run_async
-            await refresh_next_run_async()
+        db_stats = await _db_stats_range(conn, start_date, end_date)
+        await _persist_scheduled_status(
+            conn, run_at, summary["status"], {**summary, **db_stats}, trigger,
+        )
         return {**summary, **db_stats}
 
     try:
         sn_client = ServiceNowClient()
     except ValueError:
         result = {**summary, "status": "error", "error": "ServiceNow credentials not configured"}
-        await update_sync_run_status(conn, JOB_NAME, run_at, "error", result)
+        await _persist_scheduled_status(conn, run_at, "error", result, trigger)
         if trigger == "scheduled":
             logger.warning("Skipping scheduled new-incidents sync: ServiceNow not configured")
             return result
@@ -239,13 +320,22 @@ async def _run_new_incident_sync_body(
             incidents.append(row)
 
     try:
-        inserted, updated = await batch_upsert_snapshots(conn, incidents, sync_date)
+        inserted = updated = 0
+        # Group by sync_date (opened date) for correct multi-day upserts
+        by_day: dict[date, list[dict]] = {}
+        for row in incidents:
+            day = _incident_sync_date(row, sync_date)
+            by_day.setdefault(day, []).append(row)
+        for day, rows in by_day.items():
+            day_ins, day_upd = await batch_upsert_snapshots(conn, rows, day)
+            inserted += day_ins
+            updated += day_upd
         errors = 0
     except Exception as e:
         inserted = updated = 0
         errors = len(incidents)
         logger.error("Upsert failed for %d incidents: %s", len(incidents), e, exc_info=True)
-    db_stats = await _db_stats(conn, sync_date)
+    db_stats = await _db_stats_range(conn, start_date, end_date)
 
     comments_posted, comments_failed = await _analyze_and_comment(
         request or SimpleNamespace(),
@@ -265,16 +355,13 @@ async def _run_new_incident_sync_body(
     status = "success" if errors == 0 and comments_failed == 0 else "partial"
     summary["status"] = status
 
-    await update_sync_run_status(conn, JOB_NAME, run_at, status, {**summary, **db_stats})
+    await _persist_scheduled_status(conn, run_at, status, {**summary, **db_stats}, trigger)
 
     logger.info(
-        "New incident sync %s for %s — inserted=%d updated=%d total=%d",
-        status, sync_date.isoformat(), inserted, updated, len(incidents),
+        "New incident sync %s for %s → %s — inserted=%d updated=%d total=%d",
+        status, start_date.isoformat(), end_date.isoformat(),
+        inserted, updated, len(incidents),
     )
-
-    if trigger == "manual":
-        from backend.api.schedulers.new_incident import refresh_next_run_async
-        await refresh_next_run_async()
 
     return {**summary, **db_stats}
 
@@ -300,7 +387,7 @@ async def new_incidents_config_get():
 
 @router.put("/sync/new-incidents/config")
 async def new_incidents_config_update(req: NewIncidentSyncConfigUpdate):
-    """Update enabled flag and interval_hours; reschedules the in-process job."""
+    """Update enabled, interval_hours, and start_at; reschedules the in-process job."""
     if req.interval_hours < 1 or req.interval_hours > 168:
         raise HTTPException(400, "interval_hours must be between 1 and 168")
 
@@ -311,6 +398,7 @@ async def new_incidents_config_update(req: NewIncidentSyncConfigUpdate):
             JOB_NAME,
             enabled=req.enabled,
             interval_hours=req.interval_hours,
+            start_at=req.start_at,
         )
     if not updated:
         raise HTTPException(404, f"Sync config not found for job: {JOB_NAME}")
@@ -327,18 +415,31 @@ async def new_incidents_config_update(req: NewIncidentSyncConfigUpdate):
 
 
 @router.get("/sync/new-incidents/preview")
-async def new_incidents_preview():
-    """Get today's new incidents from ServiceNow for preview."""
-    sync_date = date.today()
+async def new_incidents_preview(
+    start_date: date | None = Query(None, description="YYYY-MM-DD (default: today)"),
+    end_date: date | None = Query(None, description="YYYY-MM-DD (default: today)"),
+):
+    """Get new incidents from ServiceNow for the requested calendar date range.
+
+    Max 7-day range is enforced in the UI only.
+    """
+    start = start_date or date.today()
+    end = end_date or date.today()
+
     pool = await get_pool()
 
     async def fetch_db_stats() -> dict:
         async with pool.acquire() as conn:
-            return await _db_stats(conn, sync_date)
+            return await _db_stats_range(conn, start, end)
 
-    incidents, db_stats = await asyncio.gather(_get_new_incidents(), fetch_db_stats())
+    incidents, db_stats = await asyncio.gather(
+        _get_new_incidents(start_date=start, end_date=end),
+        fetch_db_stats(),
+    )
     return {
-        "sync_date": sync_date.isoformat(),
+        "sync_date": end.isoformat(),
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
         "total": len(incidents),
         "incidents": incidents,
         **db_stats,
@@ -354,6 +455,8 @@ async def new_incidents_run(request: Request, req: NewIncidentsRunRequest):
         trigger="manual",
         incident_numbers=incident_numbers,
         request=request,
+        start_date=req.start_date,
+        end_date=req.end_date,
     )
     if result.get("skipped_lock"):
         raise HTTPException(409, "Sync already running")

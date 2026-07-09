@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from backend.api.schedulers import incident as incident_scheduler
+from backend.api.utils.sync_config import compute_scheduled_window
 
 if TYPE_CHECKING:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -17,12 +18,21 @@ LOG_LABEL = "New incident sync"
 
 
 async def _run_scheduled_sync() -> None:
-    """Scheduled run: sync today's new incidents from ServiceNow."""
+    """Scheduled run: sync new incidents in [last_run_at → now]."""
     from backend.api.routers.sync.new_incident import run_new_incident_sync
 
     logger.info("Scheduled new incident sync starting")
     try:
-        result = await run_new_incident_sync(trigger="scheduled")
+        config = await incident_scheduler.load_job_config(JOB_ID)
+        interval_hours = int((config or {}).get("interval_hours") or 24)
+        last_run_at = (config or {}).get("last_run_at")
+        window_start, window_end = compute_scheduled_window(last_run_at, interval_hours)
+
+        result = await run_new_incident_sync(
+            trigger="scheduled",
+            window_start=window_start,
+            window_end=window_end,
+        )
         logger.info(
             "Scheduled new incident sync finished — status=%s inserted=%s updated=%s total=%s",
             result.get("status"),

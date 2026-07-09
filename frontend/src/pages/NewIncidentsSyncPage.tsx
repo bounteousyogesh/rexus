@@ -11,54 +11,60 @@ import type {
   NewIncident,
   NewIncidentsPreview,
   NewIncidentSyncConfig,
-  NewIncidentSyncConfigUpdate,
   NewIncidentSyncResult,
+  NewIncidentsRunResponse,
 } from '../types';
 import { SyncJobPanel } from '../components/sync';
 import { useScheduledSyncJob } from '../hooks/useScheduledSyncJob';
+import { useSyncDateRange } from '../hooks/useSyncDateRange';
+import { formatScheduleTime, validateSyncDateRange } from '../utils/datetime';
 
 interface NewIncidentsSyncPageProps {
   onBack?: () => void;
 }
 
 export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPageProps) {
+  const { startDate, endDate, setStartDate, setEndDate } = useSyncDateRange('new-incidents');
   const [preview, setPreview] = useState<NewIncidentsPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncedNumbers, setSyncedNumbers] = useState<Set<string>>(new Set());
+  const [manualResult, setManualResult] = useState<NewIncidentsRunResponse | null>(null);
 
   const {
     config,
     loading: configLoading,
-    saving,
     error,
     setError,
-    enabled,
-    setEnabled,
-    intervalHours,
-    setIntervalHours,
-    configDirty,
-    setConfigDirty,
-    loadConfig,
-    saveSchedule,
-  } = useScheduledSyncJob<NewIncidentSyncConfig, NewIncidentSyncConfigUpdate>({
+  } = useScheduledSyncJob<NewIncidentSyncConfig>({
     getConfig: api.newIncidentsConfigGet,
-    setConfig: api.newIncidentsConfigSet,
-    buildUpdate: (enabled, interval_hours) => ({ enabled, interval_hours }),
   });
 
+  const rangeError = validateSyncDateRange(startDate, endDate);
+
   const loadPreview = useCallback(async () => {
+    const validation = validateSyncDateRange(startDate, endDate);
+    if (validation) {
+      setPreview(null);
+      setPreviewLoading(false);
+      return;
+    }
+    setPreviewLoading(true);
     try {
-      setPreview(await api.newIncidentsPreview());
+      setPreview(await api.newIncidentsPreview({ start_date: startDate, end_date: endDate }));
+      setSyncedNumbers(new Set());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load incidents');
     } finally {
       setPreviewLoading(false);
     }
-  }, [setError]);
+  }, [startDate, endDate, setError]);
 
   useEffect(() => {
     void loadPreview();
+  }, [loadPreview]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => {
       if (document.visibilityState === 'visible') void loadPreview();
     }, 60_000);
@@ -69,23 +75,32 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
 
   const runSync = useCallback(async (incidents: NewIncident[]) => {
     if (!incidents.length) return;
+    const validation = validateSyncDateRange(startDate, endDate);
+    if (validation) {
+      setError(validation);
+      return;
+    }
     setSyncing(true);
     setError(null);
     try {
       const numbers = incidents.map((inc) => inc.incident_number);
-      await api.newIncidentsRun(numbers);
+      const result = await api.newIncidentsRun(numbers, {
+        start_date: startDate,
+        end_date: endDate,
+      });
+      setManualResult(result);
       setSyncedNumbers((prev) => {
         const next = new Set(prev);
         numbers.forEach((n) => next.add(n));
         return next;
       });
-      await Promise.all([loadConfig({ silent: true }), loadPreview()]);
+      await loadPreview();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sync failed');
     } finally {
       setSyncing(false);
     }
-  }, [loadConfig, loadPreview, setError]);
+  }, [startDate, endDate, loadPreview, setError]);
 
   const runSyncNow = useCallback(async () => {
     const incidents = preview?.incidents ?? [];
@@ -97,39 +112,35 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
   }, [preview, runSync, setError]);
 
   const incidents = preview?.incidents ?? [];
-  const groupLabel = preview?.sync_date ?? 'Today';
+  const groupLabel =
+    startDate === endDate ? startDate : `${startDate} → ${endDate}`;
   const allSynced = incidents.length > 0 && incidents.every((inc) => syncedNumbers.has(inc.incident_number));
-  const lastResult = config?.last_result;
+  const scheduledResult = config?.last_result;
 
   return (
     <SyncJobPanel<NewIncidentSyncResult>
       onBack={onBack}
-      error={error}
+      error={error || rangeError}
       icon={RefreshCw}
       title="Sync & Analyze New Incidents"
       subtitle={
         <>
-          Opened today in New state — syncs to REXUS, analyzes, and posts a comment on each ticket
-          {preview?.sync_date ? ` (${preview.sync_date})` : ''}
+          New-state incidents in the selected date range — syncs to REXUS, analyzes, and posts a comment on each ticket
         </>
       }
-      scheduleHint="Scheduled runs sync and analyze today's new incidents from ServiceNow"
-      syncDescription="Sync all new incidents opened today, analyze each, and post REXUS comments"
+      scheduleHint="Scheduled runs sync the window since the last scheduled run"
       syncButtonLabel="Sync Now"
       syncLoadingLabel="Syncing..."
       onSyncNow={() => void runSyncNow()}
-      syncDisabled={loading || incidents.length === 0}
+      syncDisabled={loading || !!rangeError || incidents.length === 0}
       syncing={syncing}
       loading={loading}
-      saving={saving}
-      enabled={enabled}
-      intervalHours={intervalHours}
-      configDirty={configDirty}
+      intervalHours={config?.interval_hours ?? 24}
       lastRunAt={config?.last_run_at}
       lastStatus={config?.last_status}
       nextRunAt={config?.next_run_at}
       scheduleEnabled={config?.enabled ?? false}
-      lastResult={lastResult}
+      lastResult={scheduledResult}
       renderLastRunSummary={(result) => (
         <p className="text-xs text-slate-500">
           {result.inserted} inserted, {result.updated} updated,{' '}
@@ -146,16 +157,37 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
           </span>
         </div>
       )}
-      onEnabledChange={(value) => {
-        setEnabled(value);
-        setConfigDirty(true);
-      }}
-      onIntervalChange={(value) => {
-        setIntervalHours(value);
-        setConfigDirty(true);
-      }}
-      onSaveSchedule={() => void saveSchedule()}
+      dateRangeControls={
+        <>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">From</label>
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">To</label>
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
+            />
+          </div>
+          <p className="text-xs text-slate-400 pb-2">Max range: 7 days</p>
+        </>
+      }
     >
+      {manualResult && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-sm text-emerald-800">
+          Manual sync: {manualResult.total} incident(s), {manualResult.inserted} inserted,{' '}
+          {manualResult.updated} updated, {manualResult.comments_posted} comment(s) posted
+        </div>
+      )}
+
       {loading ? (
         <div className="p-8 text-center text-sm text-slate-400">
           <Loader2 size={16} className="animate-spin inline mr-2" />
@@ -165,7 +197,7 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <p className="text-sm text-slate-600">
-              Found <strong>{preview.total}</strong> new incident{preview.total === 1 ? '' : 's'} opened today,{' '}
+              Found <strong>{preview.total}</strong> new incident{preview.total === 1 ? '' : 's'} in range,{' '}
               <strong className="text-blue-600">{preview.db_count}</strong> synced to database
             </p>
           </div>
@@ -173,7 +205,7 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
           {incidents.length === 0 ? (
             <div className="rounded-xl p-6 text-center border bg-amber-50 border-amber-200">
               <AlertCircle size={28} className="mx-auto text-amber-500 mb-2" />
-              <p className="text-sm font-medium text-amber-800">No new incidents for today</p>
+              <p className="text-sm font-medium text-amber-800">No new incidents in this date range</p>
             </div>
           ) : (
             <>
@@ -183,7 +215,7 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
                 </p>
                 <button
                   onClick={() => void runSync(incidents)}
-                  disabled={syncing || allSynced}
+                  disabled={syncing || allSynced || !!rangeError}
                   className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
                 >
                   {syncing ? (
@@ -202,7 +234,7 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
                   </div>
                   <button
                     onClick={() => void runSync(incidents)}
-                    disabled={syncing || allSynced}
+                    disabled={syncing || allSynced || !!rangeError}
                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                       allSynced
                         ? 'bg-emerald-100 text-emerald-700'
@@ -220,16 +252,29 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
                 </div>
                 <div className="max-h-96 overflow-y-auto">
                   <table className="w-full text-[11px]">
+                    <thead>
+                      <tr className="border-b border-slate-100 text-slate-400">
+                        <th className="px-3 py-1.5 text-left font-medium w-28">Number</th>
+                        <th className="px-3 py-1.5 text-left font-medium">Description</th>
+                        <th className="px-3 py-1.5 text-left font-medium w-24">CMDB</th>
+                        <th className="px-3 py-1.5 text-left font-medium w-20">State</th>
+                        <th className="px-3 py-1.5 text-left font-medium w-36">Opened</th>
+                        <th className="px-3 py-1.5 w-8" />
+                      </tr>
+                    </thead>
                     <tbody>
                       {incidents.map((inc) => {
                         const synced = syncedNumbers.has(inc.incident_number);
                         return (
                           <tr key={inc.incident_number} className="border-b border-slate-50">
-                            <td className="px-3 py-1.5 font-mono text-blue-600 w-28">{inc.incident_number}</td>
+                            <td className="px-3 py-1.5 font-mono text-blue-600">{inc.incident_number}</td>
                             <td className="px-3 py-1.5 text-slate-600 truncate max-w-xs">{inc.short_description}</td>
-                            <td className="px-3 py-1.5 text-slate-400 w-24">{inc.cmdb_ci || '—'}</td>
-                            <td className="px-3 py-1.5 text-slate-400 w-20">{inc.opened_at?.slice(0, 10) || '—'}</td>
-                            <td className="px-3 py-1.5 w-16">
+                            <td className="px-3 py-1.5 text-slate-400">{inc.cmdb_ci || '—'}</td>
+                            <td className="px-3 py-1.5 text-slate-600">{inc.state || '—'}</td>
+                            <td className="px-3 py-1.5 text-slate-400 whitespace-nowrap">
+                              {inc.opened_at ? formatScheduleTime(inc.opened_at) : '—'}
+                            </td>
+                            <td className="px-3 py-1.5">
                               {synced && <CheckCircle2 size={12} className="text-emerald-500" />}
                             </td>
                           </tr>

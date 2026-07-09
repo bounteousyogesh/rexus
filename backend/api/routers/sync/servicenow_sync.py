@@ -19,15 +19,13 @@ from backend.api.database import get_pool
 from backend.api.models.sync import ImportRequest
 from backend.api.utils.incident_groups import group_incidents_by_period
 from backend.api.utils.sync_constants import KB_MAPPING_REFRESH_MAX, SYNC_IMPORT_MAX
-from backend.services.servicenow_client import ServiceNowClient
-
 from .sync import (
     CATALOG_PATH,
     catalog_date_bounds,
     enrich_incident_row,
     filter_incidents_by_opened_date,
     fetch_incident_detailed,
-    is_closed_incident,
+    is_incident_state,
     limiter,
     load_from_catalog,
     map_search_incident,
@@ -220,7 +218,7 @@ async def sync_import(request: Request, req: ImportRequest):
                 failed += 1
                 continue
 
-            if not is_closed_incident(data):
+            if not is_incident_state(data, "closed"):
                 state = data.get("incident", {}).get("incident_state_display", "")
                 results.append({"incident": inc_num, "status": "skipped_not_closed", "state": state})
                 continue

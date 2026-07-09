@@ -10,7 +10,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from backend.api.database import get_pool
 from backend.api.schedulers.scheduler import get_scheduler
-from backend.api.utils.time_utils import to_naive_utc, utc_now_naive
+from backend.api.utils.time_utils import from_naive_utc, to_naive_utc, utc_now_naive
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ async def load_job_config(job_id: str) -> dict | None:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT enabled, interval_hours
+            SELECT enabled, interval_hours, start_at, last_run_at
             FROM rexus_sync_config
             WHERE job_name = $1
             """,
@@ -89,9 +89,11 @@ async def register_incident_sync_job(
         return
 
     hours = int(config.get("interval_hours") or 24)
+    start_at = from_naive_utc(to_naive_utc(config.get("start_at"))) or from_naive_utc(utc_now_naive())
+
     scheduler.add_job(
         run_fn,
-        trigger=IntervalTrigger(hours=hours),
+        trigger=IntervalTrigger(hours=hours, start_date=start_at),
         id=job_id,
         max_instances=1,
         replace_existing=True,
@@ -103,9 +105,10 @@ async def register_incident_sync_job(
     job = scheduler.get_job(job_id)
     next_run = job.next_run_time if job else None
     logger.info(
-        "%s scheduled every %d hour(s); next run: %s",
+        "%s scheduled every %d hour(s) from %s; next run: %s",
         log_label,
         hours,
+        start_at,
         next_run,
     )
 
