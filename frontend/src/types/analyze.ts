@@ -46,7 +46,7 @@ export interface AnalyzeResult {
     order_ids: string[];
     jira_tickets: string[];
     kb_articles?: KbArticle[];
-    kb_source?:  'incident' | 'similar';
+    kb_source?: 'incident' | 'similar';
     kb_source_incident?: string;
     kb_match_percent?: number;
     /** Set when playbook text is summarized from a linked knowledge article. */
@@ -57,4 +57,31 @@ export interface AnalyzeResult {
     close_notes: string;
     similarity: number;
   }[];
+}
+
+export interface OrderIncidentCard {
+  incident_number: string;
+  status: string;
+  short_description: string;
+  opened_at?: string | null;
+  two_line_summary: string[];
+  inc_tasks: string[];
+  alternate_orders: string[];
+  problem_refs: string[];
+}
+
+export interface OrderAnalyzeSummary {
+  analysis: string;
+  accounting_actions: string;
+  payment_activities: string;
+  solutions: string;
+  system_states: string;
+}
+
+export interface OrderAnalyzeResult {
+  order_number: string;
+  incident_count: number;
+  message: string;
+  incidents: OrderIncidentCard[];
+  summary: OrderAnalyzeSummary;
 }

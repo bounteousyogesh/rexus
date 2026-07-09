@@ -9,6 +9,7 @@ import { isLocalDevelopment } from './env';
 import AuthCallback from './pages/AuthCallback';
 import DashboardPage from './pages/Dashboard';
 import AnalyzePage from './pages/Analyze';
+import AnalyzeOrderPage from './pages/AnalyzeOrder';
 import IncidentsPage from './pages/Incidents';
 import ClustersPage from './pages/Clusters';
 import SearchPage from './pages/SearchPage';
@@ -20,7 +21,23 @@ import NewIncidentsSyncPage from './pages/NewIncidentsSyncPage';
 import ClosedIncidentsSyncPage from './pages/ClosedIncidentsSyncPage';
 import ChangePassword from './pages/ChangePassword';
 
-type Page = 'dashboard' | 'analyze' | 'incidents-closed' | 'incidents-new' | 'clusters' | 'search' | 'admin' | 'maintenance' | `maintenance-${MaintenanceJobId}`;
+type Page =
+  | 'dashboard'
+  | 'analyze-incident'
+  | 'analyze-order'
+  | 'incidents-closed'
+  | 'incidents-new'
+  | 'clusters'
+  | 'search'
+  | 'admin'
+  | 'maintenance'
+  | `maintenance-${MaintenanceJobId}`;
+
+function getGroupForPage(page: Page): string | null {
+  if (page === 'analyze-incident' || page === 'analyze-order') return 'Analyze';
+  if (page === 'incidents-closed' || page === 'incidents-new') return 'Incidents';
+  return null;
+}
 
 function getIncidentDeepLink(): string | undefined {
   const params = new URLSearchParams(window.location.search);
@@ -44,6 +61,10 @@ function isIncidentsPage(page: Page): boolean {
   return page === 'incidents-closed' || page === 'incidents-new';
 }
 
+function isAnalyzePage(page: Page): boolean {
+  return page === 'analyze-incident' || page === 'analyze-order';
+}
+
 type NavItem =
   | { type: 'link'; id: Page; label: string; icon: React.ReactNode; adminOnly?: boolean }
   | {
@@ -55,7 +76,15 @@ type NavItem =
 
 const NAV: NavItem[] = [
   { type: 'link', id: 'dashboard', label: 'Dashboard', icon: <BarChart3 size={18} /> },
-  { type: 'link', id: 'analyze', label: 'Analyze', icon: <Zap size={18} /> },
+  {
+    type: 'group',
+    label: 'Analyze',
+    icon: <Zap size={18} />,
+    children: [
+      { id: 'analyze-incident', label: 'Incident' },
+      { id: 'analyze-order', label: 'Order Number' },
+    ],
+  },
   {
     type: 'group',
     label: 'Incidents',
@@ -74,13 +103,17 @@ const NAV: NavItem[] = [
 function AuthenticatedApp() {
   const { user, logout } = useAuth();
   const [initialIncident] = useState(() => getIncidentDeepLink());
-  const [page, setPage] = useState<Page>(() => (initialIncident ? 'analyze' : 'dashboard'));
+  const [page, setPage] = useState<Page>(() => (initialIncident ? 'analyze-incident' : 'dashboard'));
   const [showChangePassword, setShowChangePassword] = useState(false);
-  const [incidentsExpanded, setIncidentsExpanded] = useState(true);
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({
+    Analyze: true,
+    Incidents: true,
+  });
 
   useEffect(() => {
-    if (isIncidentsPage(page)) {
-      setIncidentsExpanded(true);
+    const group = getGroupForPage(page);
+    if (group) {
+      setExpandedGroups((prev) => ({ ...prev, [group]: true }));
     }
   }, [page]);
 
@@ -102,12 +135,19 @@ function AuthenticatedApp() {
         <nav className="flex-1 p-3 space-y-1">
           {visibleNav.map((item) => {
             if (item.type === 'group') {
-              const groupActive = isIncidentsPage(page);
+              const groupActive =
+                item.label === 'Analyze' ? isAnalyzePage(page) : isIncidentsPage(page);
+              const isExpanded = expandedGroups[item.label] ?? false;
               return (
                 <div key={item.label} className="space-y-1">
                   <button
                     type="button"
-                    onClick={() => setIncidentsExpanded((expanded) => !expanded)}
+                    onClick={() =>
+                      setExpandedGroups((prev) => ({
+                        ...prev,
+                        [item.label]: !isExpanded,
+                      }))
+                    }
                     className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                       groupActive
                         ? 'text-white'
@@ -116,9 +156,9 @@ function AuthenticatedApp() {
                   >
                     {item.icon}
                     <span className="flex-1 text-left">{item.label}</span>
-                    {incidentsExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                   </button>
-                  {incidentsExpanded && (
+                  {isExpanded && (
                     <div className="space-y-1">
                       {item.children.map((child) => (
                         <button
@@ -182,7 +222,8 @@ function AuthenticatedApp() {
       {/* Main content */}
       <main className="flex-1 overflow-auto">
         {page === 'dashboard' && <DashboardPage />}
-        {page === 'analyze' && <AnalyzePage initialIncident={initialIncident} />}
+        {page === 'analyze-incident' && <AnalyzePage initialIncident={initialIncident} />}
+        {page === 'analyze-order' && <AnalyzeOrderPage />}
         {page === 'incidents-closed' && <IncidentsPage view="closed" />}
         {page === 'incidents-new' && <IncidentsPage view="new" />}
         {page === 'clusters' && <ClustersPage />}

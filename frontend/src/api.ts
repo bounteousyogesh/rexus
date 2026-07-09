@@ -1,6 +1,7 @@
 import type {
   Analytics,
   AnalyzeResult,
+  OrderAnalyzeResult,
   AuthUser,
   KbMappingRefreshPreview,
   KbMappingRefreshResponse,
@@ -28,6 +29,7 @@ import type {
 export type {
   Analytics,
   AnalyzeResult,
+  OrderAnalyzeResult,
   AuthUser,
   KbMappingRefreshGroup,
   KbMappingRefreshIncident,
@@ -168,6 +170,25 @@ export const api = {
 
   analyzeIncident: (incidentNumber: string, limit = 15) =>
     post<AnalyzeResult>(`/analyze/incident/${encodeURIComponent(incidentNumber)}`, { limit, threshold: 0.4 }),
+
+  analyzeOrder: async (orderNumber: string): Promise<OrderAnalyzeResult> => {
+    const res = await fetch(`${BASE}/analyze/order`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ order_number: orderNumber }),
+    });
+    if (!res.ok) {
+      let detail = `API error: ${res.status}`;
+      try {
+        const body = await res.json();
+        if (typeof body?.detail === 'string') detail = body.detail;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(detail);
+    }
+    return res.json();
+  },
 
   parsePdf: async (file: File): Promise<Record<string, unknown>> => {
     const form = new FormData();
