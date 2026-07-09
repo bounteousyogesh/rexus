@@ -19,6 +19,7 @@ from backend.api.database import get_pool
 from backend.api.models.sync import ImportRequest
 from backend.api.utils.incident_groups import group_incidents_by_period
 from backend.api.utils.sync_constants import KB_MAPPING_REFRESH_MAX, SYNC_IMPORT_MAX
+from backend.services.servicenow_client import ServiceNowClient
 from .sync import (
     CATALOG_PATH,
     catalog_date_bounds,
