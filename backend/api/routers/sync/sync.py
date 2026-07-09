@@ -62,6 +62,11 @@ def incident_value(incident: dict, *keys: str) -> str:
             return str(value)
     return ""
 
+def is_incident_state(incident: dict, state: str) -> bool:
+    """Return True when incident_state_display contains the given state (e.g. closed, new)."""
+    display = incident_value(incident, "incident_state_display")
+    return state.lower() in str(display).lower()
+
 def incident_opened_date(incident: dict) -> str | None:
     """Return the incident opened date as YYYY-MM-DD, if present."""
     opened = incident_value(
@@ -83,11 +88,6 @@ def incident_opened_date(incident: dict) -> str | None:
     except ValueError:
         return None
     return date_str
-
-def is_closed_incident(data: dict) -> bool:
-    """Return True when the incident state indicates closed."""
-    state = data.get("incident", {}).get("incident_state_display", "")
-    return "closed" in str(state).lower()
 
 def filter_incidents_by_opened_date(
     incidents: list[dict],

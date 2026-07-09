@@ -42,6 +42,8 @@ export interface NewIncident {
 
 export interface NewIncidentsPreview {
   sync_date: string;
+  start_date?: string;
+  end_date?: string;
   total: number;
   incidents: NewIncident[];
   db_count: number;
@@ -50,6 +52,8 @@ export interface NewIncidentsPreview {
 
 export interface NewIncidentsRunResponse {
   sync_date: string;
+  start_date?: string;
+  end_date?: string;
   inserted: number;
   updated: number;
   errors: number;
@@ -64,6 +68,7 @@ export interface NewIncidentSyncConfig {
   job_name: string;
   enabled: boolean;
   interval_hours: number;
+  start_at: string | null;
   last_run_at: string | null;
   last_status: string | null;
   last_result: NewIncidentSyncResult | null;
@@ -74,10 +79,13 @@ export interface NewIncidentSyncConfig {
 export interface NewIncidentSyncConfigUpdate {
   enabled: boolean;
   interval_hours: number;
+  start_at: string | null;
 }
 
 export interface NewIncidentSyncResult {
   sync_date: string;
+  start_date?: string;
+  end_date?: string;
   trigger: string;
   status?: string;
   inserted: number;
@@ -132,6 +140,7 @@ export interface ClosedIncidentSyncConfig {
   job_name: string;
   enabled: boolean;
   interval_hours: number;
+  start_at: string | null;
   last_run_at: string | null;
   last_status: string | null;
   last_result: ClosedIncidentSyncResult | null;
@@ -142,10 +151,13 @@ export interface ClosedIncidentSyncConfig {
 export interface ClosedIncidentSyncConfigUpdate {
   enabled: boolean;
   interval_hours: number;
+  start_at: string | null;
 }
 
 export interface ClosedIncidentSyncResult {
   target_date: string;
+  start_date?: string;
+  end_date?: string;
   trigger: string;
   status?: string;
   fetched: number;

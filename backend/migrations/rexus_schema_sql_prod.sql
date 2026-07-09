@@ -310,6 +310,7 @@ CREATE TABLE IF NOT EXISTS rexus_sync_config (
     job_name TEXT PRIMARY KEY,
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     interval_hours INT NOT NULL DEFAULT 24,
+    start_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_run_at TIMESTAMP,
     last_status TEXT,
     last_result JSONB,

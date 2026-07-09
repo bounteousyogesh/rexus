@@ -5,12 +5,17 @@ CREATE TABLE IF NOT EXISTS rexus_sync_config (
     job_name TEXT PRIMARY KEY,
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     interval_hours INT NOT NULL DEFAULT 24,
+    start_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_run_at TIMESTAMP,
     last_status TEXT,
     last_result JSONB,
     next_run_at TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Environments that already applied an older 012 pick up start_at on re-run.
+ALTER TABLE rexus_sync_config
+    ADD COLUMN IF NOT EXISTS start_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
 
 INSERT INTO rexus_sync_config (job_name, enabled, interval_hours)
 VALUES ('closed_incident_sync', TRUE, 24)

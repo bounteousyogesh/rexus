@@ -20,6 +20,7 @@ load_dotenv(ROOT / ".env", override=True)
 sys.path.insert(0, str(ROOT))
 
 from backend.services.servicenow_client import ServiceNowClient
+from backend.api.routers.sync.sync import is_incident_state
 
 def _print_incidents(label: str, incidents: list, verbose: bool) -> None:
     print(f"\n{label}: {len(incidents)} incident(s)")
@@ -60,39 +61,27 @@ def main() -> int:
 
     client = ServiceNowClient()
 
-    # Primary: same filters as get_new_incidents() will use when implemented
+    # Primary: date-only search (same as get_new_incidents), then client New-state filter
     primary = _try_search(
         client,
-        "Primary (incident_state=1 + full day window)",
+        "Primary (date window only)",
         args.verbose,
         start_date=start,
         end_date=end,
-        closed_only=False,
-        incident_state="1",
     )
+    if primary:
+        new_only = [i for i in primary if is_incident_state(i, "new")]
+        _print_incidents("Client-filtered New from date window", new_only, args.verbose)
 
     if not primary:
-        _try_search(
-            client,
-            "Fallback (incident_state=New)",
-            args.verbose,
-            start_date=start,
-            end_date=end,
-            closed_only=False,
-            incident_state="New",
-        )
         try:
             all_open = client.search_incidents(
-                start_date=start, end_date=end, closed_only=False
+                start_date=start, end_date=end
             )
-            new_only = [
-                i for i in all_open
-                if str(i.get("incident_state_display", "")).lower() == "new"
-                or str(i.get("incident_state", "")) == "1"
-            ]
-            _print_incidents("Client-filtered New from open today", new_only, args.verbose)
+            new_only = [i for i in all_open if is_incident_state(i, "new")]
+            _print_incidents("Client-filtered New from date window", new_only, args.verbose)
         except Exception as e:
-            print(f"Fallback B failed: {e}")
+            print(f"Fallback failed: {e}")
 
     # Helper used by app
     print("\n--- get_new_incidents() ---")

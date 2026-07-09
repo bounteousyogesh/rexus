@@ -200,10 +200,23 @@ export const api = {
   syncImport: (incident_numbers: string[]) =>
     post<SyncImportResponse>('/sync/import', { incident_numbers }),
 
-  newIncidentsPreview: () => get<NewIncidentsPreview>('/sync/new-incidents/preview'),
+  newIncidentsPreview: (params?: { start_date?: string; end_date?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.start_date) qs.set('start_date', params.start_date);
+    if (params?.end_date) qs.set('end_date', params.end_date);
+    const query = qs.toString();
+    return get<NewIncidentsPreview>(`/sync/new-incidents/preview${query ? `?${query}` : ''}`);
+  },
 
-  newIncidentsRun: (incidentNumbers: string[]) =>
-    post<NewIncidentsRunResponse>('/sync/new-incidents/run', { incident_numbers: incidentNumbers }),
+  newIncidentsRun: (
+    incidentNumbers: string[],
+    params?: { start_date?: string; end_date?: string },
+  ) =>
+    post<NewIncidentsRunResponse>('/sync/new-incidents/run', {
+      incident_numbers: incidentNumbers,
+      start_date: params?.start_date,
+      end_date: params?.end_date,
+    }),
 
   newIncidentsConfigGet: () =>
     get<NewIncidentSyncConfig>('/sync/new-incidents/config'),
@@ -217,8 +230,11 @@ export const api = {
   closedIncidentsConfigSet: (config: ClosedIncidentSyncConfigUpdate) =>
     put<ClosedIncidentSyncConfig>('/sync/closed-incidents/config', config),
 
-  closedIncidentsRun: (targetDate?: string) =>
-    post<ClosedIncidentSyncResult>('/sync/closed-incidents/run', targetDate ? { date: targetDate } : {}),
+  closedIncidentsRun: (params?: { start_date?: string; end_date?: string }) =>
+    post<ClosedIncidentSyncResult>('/sync/closed-incidents/run', {
+      start_date: params?.start_date,
+      end_date: params?.end_date,
+    }),
 
   kbMappingRefreshPreview: (hasKbFilter: KbArticleFilter = 'not_synced') =>
     get<KbMappingRefreshPreview>(`/kb-mappings/refresh/preview?has_kb_article=${hasKbFilter}`),

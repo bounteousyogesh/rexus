@@ -14,3 +14,12 @@ def to_naive_utc(dt: datetime | None) -> datetime | None:
     if dt.tzinfo is not None:
         return dt.astimezone(timezone.utc).replace(tzinfo=None)
     return dt
+
+
+def from_naive_utc(dt: datetime | None) -> datetime | None:
+    """Attach UTC to naive DB timestamps for APScheduler (expects aware datetimes)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc)
+    return dt.replace(tzinfo=timezone.utc)
