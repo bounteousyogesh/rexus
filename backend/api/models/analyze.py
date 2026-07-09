@@ -54,3 +54,34 @@ class AnalyzeTextRequest(BaseModel):
     text: str = Field(..., min_length=3, max_length=5000)
     limit: int = Field(15, ge=1, le=50)
     threshold: float = Field(0.40, ge=0.0, le=1.0)
+
+
+class OrderAnalyzeRequest(BaseModel):
+    order_number: str = Field(..., min_length=1, max_length=50)
+
+
+class OrderIncidentCard(BaseModel):
+    incident_number: str
+    status: str = ""
+    short_description: str = ""
+    opened_at: Optional[str] = None
+    two_line_summary: list[str] = []
+    inc_tasks: list[str] = []
+    alternate_orders: list[str] = []
+    problem_refs: list[str] = []
+
+
+class OrderAnalyzeSummary(BaseModel):
+    analysis: str = ""
+    accounting_actions: str = ""
+    payment_activities: str = ""
+    solutions: str = ""
+    system_states: str = ""
+
+
+class OrderAnalyzeResponse(BaseModel):
+    order_number: str
+    incident_count: int = 0
+    message: str = ""
+    incidents: list[OrderIncidentCard] = []
+    summary: OrderAnalyzeSummary = Field(default_factory=OrderAnalyzeSummary)

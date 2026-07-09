@@ -30,6 +30,8 @@ from backend.api.models.analyze import (
     AnalyzeRequest,
     AnalyzeResponse,
     AnalyzeTextRequest,
+    OrderAnalyzeRequest,
+    OrderAnalyzeResponse,
 )
 
 # ── Configurable constants ────────────────────────────────────────
@@ -1201,6 +1203,32 @@ async def _build_ticket_json_from_sn(data: dict, incident_number: str) -> dict:
         },
         "kb_articles": kb_articles,
     }
+
+@router.post("/analyze/order", response_model=OrderAnalyzeResponse)
+@limiter.limit(os.getenv("RATE_LIMIT_ANALYZE", "20/minute"))
+async def analyze_by_order_number(request: Request, body: OrderAnalyzeRequest):
+    """
+    Look up local DB incidents that explicitly reference a sales order number,
+    extract related tasks/problems/alternate orders, and generate summaries.
+    """
+    order_number = (body.order_number or "").strip()
+    if not order_number:
+        raise HTTPException(400, "Enter a sales order number.")
+    if not order_number.isdigit():
+        raise HTTPException(
+            400,
+            "Invalid sales order format. Enter digits only (e.g. 5073352821).",
+        )
+
+    from backend.api.services.order_analyze import analyze_order
+
+    pool = await get_pool()
+    try:
+        return await analyze_order(pool, order_number)
+    except Exception as e:
+        logger.exception("Order analyze failed for %s: %s", order_number, e)
+        raise HTTPException(500, f"Order analysis failed: {e}") from e
+
 
 @router.get("/fetch-incident/{incident_number}")
 @limiter.limit(os.getenv("RATE_LIMIT_ANALYZE", "20/minute"))

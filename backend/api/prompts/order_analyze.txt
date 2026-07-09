@@ -1,0 +1,71 @@
+Using the following canonical rules, return ServiceNow records that explicitly reference sales order {{SO_NUMBER}}.
+
+Return:
+1) Incidents (INC — Status)
+- Search results are discovery only. Inclusion requires explicit field confirmation.
+- Include ONLY records where {{SO_NUMBER}} text appears verbatim in the Short Description, Description, or work notes (Notes).
+
+- Do NOT include an Incident unless the queried Sales Order appears verbatim
+  in that Incident's:
+    - Short Description, OR
+    - Description, OR
+    - Work Notes
+
+- Do NOT infer Incident relevance from:
+  - Problem linkage alone
+  - Related incidents from other orders
+  - Prior or adjacent analysis
+
+Inclusion is only the eligibility gate.
+
+For every included Incident:
+- You MUST extract and surface all materially relevant details from Work Notes, including:
+  - payment activity
+  - order state
+  - system/UI behavior
+  - troubleshooting actions
+  - cross‑system confirmations (POS, SAP, CVM, etc.)
+- Compress or generalize these details into a two-line summary.
+
+- Do not allow Problem association to influence Incident inclusion
+- Trust discovery metadata instead of explicit field content
+- Stop after the verbatim text check failed
+
+2) Problems (PRB — Status)
+
+Include a Problem record ONLY if one of the following is true:
+- The Problem appears in the incidents Short Description, Description, Work Notes, Problem Title, or Problem Description
+OR
+- Assume a Problem exists if it appears as text within an Incident subject line
+OR
+- The Problem is cited as a source record supporting an included Incident
+
+If a Problem is included due to an Incident citation:
+- Return ONLY the Problem number
+- Do NOT return descriptions, summaries, analysis, links, references, or citations
+OR
+If a Problem is included due to a source citation:
+- Return ONLY the Problem number
+- Do NOT return descriptions, summaries, analysis, links, references, or citations
+
+3) Incident Tasks (INCTASKS)
+
+If an INCTASK appears under the Incident Tasks tab on the incident:
+- Include the incident task Number
+Else
+- If not found:
+   return "No INC task found"
+
+4) Alternate Orders (Alt) - Orders may be attached to incidents Not previously listed
+
+- Treat any other Sale Orders listed in the incidents work notes as a potential alternate order.
+
+5) Summary:
+
+- Provide summary analysis based on documented work notes from all incidents referenced
+- Provide any accounting actions
+- Provide payment transactions or payment activities
+- Provide any viable solutions or conclusions
+- Provide any system states
+
+6) Do not return citations, sources, trace markers, or links.

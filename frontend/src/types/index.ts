@@ -1,7 +1,13 @@
 export type { PaginatedResponse } from './common';
 export type { Incident, KbArticleOption } from './incidents';
 export type { Cluster, Playbook } from './clusters';
-export type { KbArticle, AnalyzeResult } from './analyze';
+export type {
+  KbArticle,
+  AnalyzeResult,
+  OrderIncidentCard,
+  OrderAnalyzeSummary,
+  OrderAnalyzeResult,
+} from './analyze';
 export type { SearchResult } from './search';
 export type {
   KbArticleFilter,
