@@ -710,7 +710,7 @@ async def insert_kb_mappings(conn, incident_number: str, kb_list: list[dict]) ->
     if not numbers:
         return 0
 
-     try:
+    try:
         rows = await conn.fetch(
             """INSERT INTO rexus_kb_article_incident_mapping
                    (incident_number, knowledge_article_number, kb_description)
