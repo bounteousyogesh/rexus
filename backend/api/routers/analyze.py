@@ -943,7 +943,7 @@ async def analyze_ticket(request: Request, req: AnalyzeRequest):
 
     similar_summary = [
         {"incident_number": d["incident_number"], "similarity_score": d["similarity_score"],
-         "short_description": d["short_description"], "close_notes": d.get("close_notes", "")[:300]}
+         "short_description": d["short_description"] or "", "close_notes": (d.get("close_notes") or "")[:300]}
         for d in incident_details[:10]
     ]
 
