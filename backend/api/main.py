@@ -17,7 +17,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from backend.api.database import get_pool, close_pool
-from backend.api.routers import health, incidents, clusters, playbooks, search, analyze, analytics, feedback, wave_test, sync, kb_mapping_refresh
+from backend.api.routers import health, incidents, clusters, playbooks, search, analyze, analytics, feedback, wave_test, sync, kb_mapping_refresh, frontend_log
 from backend.api.routers import auth as auth_router
 
 logger = logging.getLogger("rexus")
@@ -169,3 +169,4 @@ app.include_router(feedback.router, prefix="/api/v1")
 app.include_router(wave_test.router, prefix="/api/v1")
 app.include_router(sync.router, prefix="/api/v1")
 app.include_router(kb_mapping_refresh.router, prefix="/api/v1")
+app.include_router(frontend_log.router, prefix="/api/v1")

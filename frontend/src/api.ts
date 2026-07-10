@@ -75,41 +75,92 @@ function authHeaders(): Record<string, string> {
   return headers;
 }
 
+function fullUrl(path: string): string {
+  return `${window.location.origin}${path}`;
+}
+
+function sendToBackendLog(entry: {
+  level: string;
+  method: string;
+  url: string;
+  status?: number;
+  body?: unknown;
+  response?: unknown;
+}) {
+  // Fire-and-forget — never await, never throw
+  fetch(`${BASE}/log/frontend`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ ...entry, ts: new Date().toISOString() }),
+  }).catch(() => { /* silently ignore log failures */ });
+}
+
+function logRequest(method: string, url: string, body?: unknown) {
+  const full = fullUrl(url);
+  console.debug(`[API] → ${method} ${full}`, body !== undefined ? body : '');
+  sendToBackendLog({ level: 'request', method, url: full, body });
+}
+
+function logResponse(method: string, url: string, status: number, data: unknown) {
+  const full = fullUrl(url);
+  if (status >= 400) {
+    console.error(`[API] ← ${method} ${full} ${status} ❌`, data);
+    sendToBackendLog({ level: 'error', method, url: full, status, response: data });
+  } else {
+    console.debug(`[API] ← ${method} ${full} ${status} ✓`, data);
+    sendToBackendLog({ level: 'success', method, url: full, status });
+  }
+}
+
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { ...authHeaders() },
-  });
+  const url = `${BASE}${path}`;
+  logRequest('GET', url);
+  const res = await fetch(url, { headers: { ...authHeaders() } });
+  const data = await res.json();
+  logResponse('GET', url, res.status, data);
   if (!res.ok) throw new Error(`API error: ${res.status}`);
-  return res.json();
+  return data as T;
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const url = `${BASE}${path}`;
+  logRequest('POST', url, body);
+  const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
   });
+  const data = await res.json();
+  logResponse('POST', url, res.status, data);
   if (!res.ok) throw new Error(`API error: ${res.status}`);
-  return res.json();
+  return data as T;
 }
 
 export async function put<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const url = `${BASE}${path}`;
+  logRequest('PUT', url, body);
+  const res = await fetch(url, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(body),
   });
+  const data = await res.json();
+  logResponse('PUT', url, res.status, data);
   if (!res.ok) throw new Error(`API error: ${res.status}`);
-  return res.json();
+  return data as T;
 }
 
 export async function del<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const url = `${BASE}${path}`;
+  logRequest('DELETE', url);
+  const res = await fetch(url, {
     method: 'DELETE',
     headers: { ...authHeaders() },
   });
+  const data = await res.json();
+  logResponse('DELETE', url, res.status, data);
   if (!res.ok) throw new Error(`API error: ${res.status}`);
-  return res.json();
+  return data as T;
 }
 
 export const api = {
