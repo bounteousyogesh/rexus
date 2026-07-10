@@ -178,12 +178,18 @@ async def _db_stats_range(conn, start_date: date, end_date: date) -> dict:
 
 
 def _incident_sync_date(row: dict, fallback: date) -> date:
-    opened = (row.get("opened_at") or "")[:10]
-    if opened:
-        try:
-            return date.fromisoformat(opened)
-        except ValueError:
-            pass
+    opened_at = row.get("opened_at")
+    if opened_at is None:
+        return fallback
+    # asyncpg returns datetime/date objects; fallback handles plain strings
+    if hasattr(opened_at, "date"):
+        return opened_at.date()
+    if isinstance(opened_at, date):
+        return opened_at
+    try:
+        return date.fromisoformat(str(opened_at)[:10])
+    except ValueError:
+        pass
     return fallback
 
 
