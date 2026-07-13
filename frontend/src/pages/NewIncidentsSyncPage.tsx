@@ -29,7 +29,7 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
   const [previewLoading, setPreviewLoading] = useState(true);  const [syncing, setSyncing] = useState(false);
   const [syncedNumbers, setSyncedNumbers] = useState<Set<string>>(new Set());
   const [manualResult, setManualResult] = useState<NewIncidentsRunResponse | null>(null);
-  const [ignoreAssignmentGroup, setIgnoreAssignmentGroup] = useState(true);
+  const [ignoreAssignmentGroup, setIgnoreAssignmentGroup] = useState(false);
 
   const {
     config,

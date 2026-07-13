@@ -305,7 +305,7 @@ export const api = {
     if (params?.start_date) qs.set('start_date', params.start_date);
     if (params?.end_date) qs.set('end_date', params.end_date);
     // Always send the flag explicitly so the backend receives the true intent
-    qs.set('ignore_assignment_group', String(params?.ignore_assignment_group ?? true));
+    qs.set('ignore_assignment_group', String(params?.ignore_assignment_group ?? false));
     const query = qs.toString();
     return get<NewIncidentsPreview>(`/sync/new-incidents/preview${query ? `?${query}` : ''}`);
   },

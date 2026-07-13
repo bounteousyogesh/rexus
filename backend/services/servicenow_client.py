@@ -240,7 +240,10 @@ class ServiceNowClient:
         Pass either a calendar day (sync_date) or an explicit datetime window
         (start/end). Datetime window takes precedence when both are provided.
         New-state filtering is applied by the sync router via is_incident_state.
-        Pass ``assignment_group`` to restrict results to a specific group.
+        Pass ``assignment_group`` as a comma-separated string to restrict results
+        to one or more groups, e.g.
+        "Application Support,Application Support - Manual Corrections".
+        Each group is fetched in a separate API call and results are merged/deduped.
         """
         if start is not None and end is not None:
             start_str = start.strftime("%Y-%m-%d %H:%M:%S")
@@ -250,16 +253,36 @@ class ServiceNowClient:
             start_str = f"{day} 00:00:00"
             end_str = f"{day} 23:59:59"
 
-        filters: dict[str, str] = {}
-        if assignment_group:
-            filters["assignment_group"] = assignment_group
+        # Support comma-separated groups — the search API accepts one group per call.
+        groups = [g.strip() for g in (assignment_group or "").split(",") if g.strip()]
 
-        raw = self.search_incidents(
-            start_date=start_str,
-            end_date=end_str,
-            **filters,
-        )
-        return raw
+        if not groups:
+            # No filter — return all incidents in the window.
+            return self.search_incidents(start_date=start_str, end_date=end_str)
+
+        seen: set[str] = set()
+        merged: list[dict[str, Any]] = []
+        for group in groups:
+            logger.info(
+                "Fetching new incidents — assignment_group=%r window=%s → %s",
+                group, start_str, end_str,
+            )
+            results = self.search_incidents(
+                start_date=start_str,
+                end_date=end_str,
+                assignment_group=group,
+            )
+            added = 0
+            for inc in results:
+                num = (inc.get("number") or inc.get("incident_number") or "").strip()
+                if num and num not in seen:
+                    seen.add(num)
+                    merged.append(inc)
+                    added += 1
+            logger.info("  assignment_group=%r → %d incidents (%d new)", group, len(results), added)
+
+        logger.info("Total merged incidents across %d group(s): %d", len(groups), len(merged))
+        return merged
 
     def search_closed_incidents_window(
         self,

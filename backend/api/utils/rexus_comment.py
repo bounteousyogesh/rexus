@@ -17,8 +17,12 @@ def _format_similar_incidents(similar_incident_numbers: list[str], match_count: 
     if not shown:
         return "None found"
 
+    # Build deep-links only when SERVICENOW_INSTANCE is set.
+    # URI component is percent-encoded to avoid nested query string ambiguity.
+    from urllib.parse import quote
     links = [
-        f'<a href="{instance}/nav_to.do?uri=incident.do?sysparm_query=number={n}">{n}</a>' if instance else n
+        f'<a href="{instance}/nav_to.do?uri={quote(f"incident.do?sysparm_query=number={n}")}">{n}</a>'
+        if instance else n
         for n in shown
     ]
     extra = match_count - len(shown)
