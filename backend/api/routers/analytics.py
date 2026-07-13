@@ -1,7 +1,23 @@
 import json
+from datetime import datetime, date
+from decimal import Decimal
 from fastapi import APIRouter, Query, HTTPException
 from backend.api.database import get_pool
 from backend.api.utils.llm_provider import get_provider_info
+
+
+def _safe(value):
+    """Convert non-JSON-serializable DB values to safe Python primitives."""
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return value
+
+
+def _safe_row(row) -> dict:
+    """Convert an asyncpg Record to a JSON-safe dict."""
+    return {k: _safe(v) for k, v in dict(row).items()}
 
 router = APIRouter(tags=["analytics"])
 
@@ -75,8 +91,7 @@ async def get_analytics():
         states = await conn.fetch(
             """SELECT state, COUNT(*) as count
                FROM rexus_incidents_v3
-               WHERE state IS NOT NULL
-               GROUP BY state ORDER BY count DESC"""
+               WHERE state IS NOT NULL               GROUP BY state ORDER BY count DESC"""
         )
 
     return {
@@ -86,13 +101,13 @@ async def get_analytics():
             "total_playbooks": overview_row["playbook_count"],
             "embedded_incidents": overview_row["embedded_count"],
         },
-        "categories": [dict(r) for r in categories],
-        "top_cmdb_cis": [dict(r) for r in top_cmdb],
-        "top_assignment_groups": [dict(r) for r in top_groups],
-        "resolution_time": dict(resolution_stats) if resolution_stats else {},
-        "top_clusters": [dict(r) for r in top_clusters],
-        "monthly_trend": [dict(r) for r in monthly_trend],
-        "states": [dict(r) for r in states],
+        "categories": [_safe_row(r) for r in categories],
+        "top_cmdb_cis": [_safe_row(r) for r in top_cmdb],
+        "top_assignment_groups": [_safe_row(r) for r in top_groups],
+        "resolution_time": _safe_row(resolution_stats) if resolution_stats else {},
+        "top_clusters": [_safe_row(r) for r in top_clusters],
+        "monthly_trend": [_safe_row(r) for r in monthly_trend],
+        "states": [_safe_row(r) for r in states],
     }
 
 
@@ -128,7 +143,7 @@ async def list_analyses(
         "page": page,
         "page_size": page_size,
         "pages": max(1, (total + page_size - 1) // page_size),
-        "items": [dict(r) for r in rows],
+        "items": [_safe_row(r) for r in rows],
     }
 
 
@@ -202,16 +217,15 @@ async def get_token_usage(
                    SUM(input_tokens + output_tokens) as tokens,
                    SUM(estimated_cost_usd)::float as cost_usd
             FROM rexus_token_usage
-            WHERE created_at >= NOW() - INTERVAL '1 day' * $1
-            GROUP BY DATE(created_at) ORDER BY date
+            WHERE created_at >= NOW() - INTERVAL '1 day' * $1            GROUP BY DATE(created_at) ORDER BY date
         """, days)
 
     return {
         "period_days": days,
-        "totals": dict(totals) if totals else {},
-        "by_model": [dict(r) for r in by_model],
-        "by_endpoint": [dict(r) for r in by_endpoint],
-        "daily_trend": [dict(r) for r in daily],
+        "totals": _safe_row(totals) if totals else {},
+        "by_model": [_safe_row(r) for r in by_model],
+        "by_endpoint": [_safe_row(r) for r in by_endpoint],
+        "daily_trend": [_safe_row(r) for r in daily],
     }
 
 

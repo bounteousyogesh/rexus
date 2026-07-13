@@ -87,6 +87,16 @@ function _shouldBackendLog(url: string): boolean {
   return !_NO_BACKEND_LOG.some(skip => url.includes(skip));
 }
 
+function _truncateForLog(value: unknown, maxLen = 400): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  try {
+    const s = typeof value === 'string' ? value : JSON.stringify(value);
+    return s.length > maxLen ? s.slice(0, maxLen) + '…' : s;
+  } catch {
+    return String(value).slice(0, maxLen);
+  }
+}
+
 function sendToBackendLog(entry: {
   level: string;
   method: string;
@@ -97,10 +107,19 @@ function sendToBackendLog(entry: {
 }) {
   if (!_shouldBackendLog(entry.url)) return;
   // Fire-and-forget — never await, never throw
+  const payload = {
+    level: entry.level,
+    method: entry.method,
+    url: entry.url,
+    status: entry.status,
+    body: _truncateForLog(entry.body),
+    response: _truncateForLog(entry.response),
+    ts: new Date().toISOString(),
+  };
   fetch(`${BASE}/log/frontend`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ ...entry, ts: new Date().toISOString() }),
+    body: JSON.stringify(payload),
   }).catch(() => { /* silently ignore log failures */ });
 }
 
@@ -117,7 +136,7 @@ function logResponse(method: string, url: string, status: number, data: unknown)
     sendToBackendLog({ level: 'error', method, url: full, status, response: data });
   } else {
     console.debug(`[API] ← ${method} ${full} ${status} ✓`, data);
-    sendToBackendLog({ level: 'success', method, url: full, status });
+    sendToBackendLog({ level: 'success', method, url: full, status, response: data });
   }
 }
 

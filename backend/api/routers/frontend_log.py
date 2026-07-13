@@ -40,27 +40,31 @@ class FrontendLogEntry(BaseModel):
 async def receive_frontend_log(entry: FrontendLogEntry) -> None:
     """Accept a single frontend API log entry and write it to the server log."""
     if entry.level == "request":
-        logger.info(
-            "[FRONTEND] → %s %s  body=%s",
-            entry.method,
-            entry.url,
-            _truncate(entry.body),
-        )
+        body_str = _truncate(entry.body)
+        if body_str:
+            logger.info(
+                "[FRONTEND] → %s %s  body=%s",
+                entry.method, entry.url, body_str,
+            )
+        else:
+            logger.info("[FRONTEND] → %s %s", entry.method, entry.url)
     elif entry.level == "error":
         logger.warning(
             "[FRONTEND] ← %s %s  status=%s  response=%s",
-            entry.method,
-            entry.url,
-            entry.status,
-            _truncate(entry.response),
+            entry.method, entry.url, entry.status, _truncate(entry.response),
         )
     else:
-        logger.info(
-            "[FRONTEND] ← %s %s  status=%s",
-            entry.method,
-            entry.url,
-            entry.status,
-        )
+        resp_str = _truncate(entry.response)
+        if resp_str:
+            logger.info(
+                "[FRONTEND] ← %s %s  status=%s  response=%s",
+                entry.method, entry.url, entry.status, resp_str,
+            )
+        else:
+            logger.info(
+                "[FRONTEND] ← %s %s  status=%s",
+                entry.method, entry.url, entry.status,
+            )
 
 
 def _truncate(value: Any, max_len: int = 500) -> str:
