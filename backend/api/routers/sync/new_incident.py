@@ -98,14 +98,14 @@ async def _analyze_and_comment(
                 similar_incident_numbers=[
                     similar.get("incident_number", "")
                     for similar in analyze_result.get("similar_incidents", [])
-                    if similar.get("incident_number")                ],
+                    if similar.get("incident_number")
+                ],
             )
             posted = await asyncio.to_thread(
                 sn_client.add_incident_comment,
                 inc_num,
                 comment,
-                category=(data.get("incident") or {}).get("category") or "software",
-                subcategory=(data.get("incident") or {}).get("subcategory") or "error condition",
+                sys_id=(data.get("incident") or {}).get("sys_id") or None,
             )
             if posted:
                 await _mark_incident_analyzed(pool, inc_num)
