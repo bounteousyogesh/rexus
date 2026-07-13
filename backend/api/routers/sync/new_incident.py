@@ -459,7 +459,7 @@ async def new_incidents_config_update(req: NewIncidentSyncConfigUpdate):
 async def new_incidents_preview(
     start_date: date | None = Query(None, description="YYYY-MM-DD (default: today)"),
     end_date: date | None = Query(None, description="YYYY-MM-DD (default: today)"),
-    ignore_assignment_group: bool = Query(False, description="If true, return all new incidents regardless of assignment group"),
+    ignore_assignment_group: bool = Query(True, description="If true, return all new incidents regardless of assignment group"),
 ):
     """Get new incidents from ServiceNow for the requested calendar date range.
 

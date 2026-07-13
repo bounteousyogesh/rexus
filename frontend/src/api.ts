@@ -299,11 +299,13 @@ export const api = {
 
   syncImport: (incident_numbers: string[]) =>
     post<SyncImportResponse>('/sync/import', { incident_numbers }),
+
   newIncidentsPreview: (params?: { start_date?: string; end_date?: string; ignore_assignment_group?: boolean }) => {
     const qs = new URLSearchParams();
     if (params?.start_date) qs.set('start_date', params.start_date);
     if (params?.end_date) qs.set('end_date', params.end_date);
-    if (params?.ignore_assignment_group) qs.set('ignore_assignment_group', 'true');
+    // Always send the flag explicitly so the backend receives the true intent
+    qs.set('ignore_assignment_group', String(params?.ignore_assignment_group ?? true));
     const query = qs.toString();
     return get<NewIncidentsPreview>(`/sync/new-incidents/preview${query ? `?${query}` : ''}`);
   },
