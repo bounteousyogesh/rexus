@@ -101,7 +101,12 @@ async def _analyze_and_comment(
                     if similar.get("incident_number")
                 ],
             )
-            posted = await asyncio.to_thread(sn_client.add_incident_comment, inc_num, comment)
+            posted = await asyncio.to_thread(
+                sn_client.add_incident_comment,
+                inc_num,
+                comment,
+                category=(data.get("incident") or {}).get("category") or None,
+            )
             if posted:
                 await _mark_incident_analyzed(pool, inc_num)
                 comments_posted += 1

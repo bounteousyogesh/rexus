@@ -347,15 +347,23 @@ class ServiceNowClient:
                 return data["result"]["data"]
         return None
 
-    def add_incident_comment(self, identifier: str, comment: str) -> bool:
-        """Append a caller-visible comment via PATCH /incident/{identifier}."""
+    def add_incident_comment(self, identifier: str, comment: str, *, category: str | None = None) -> bool:
+        """Append a caller-visible comment via PATCH /incident/{identifier}.
+
+        Some ServiceNow instances require ``category`` to be present on the
+        PATCH body when it is not already set on the incident.  Pass it here
+        so the API never returns a 400.
+        """
         comment = (comment or "").strip()
         if not comment:
             return False
+        payload: dict = {"comments": comment}
+        if category:
+            payload["category"] = category
         resp = requests.patch(
             f"{self.instance_url}/api/ditci/v1/servicenow/incident/{identifier}",
             headers={**self._headers(), "Content-Type": "application/json"},
-            json={"comments": comment},
+            json=payload,
             timeout=self._timeout,
         )
         if resp.status_code != 200:
