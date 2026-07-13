@@ -997,8 +997,9 @@ async def _run_analyze(req: AnalyzeRequest) -> dict:
                     inc_section.get("Configuration item", ""),
                     inc_section.get("Assignment group", ""),
                     inc_section.get("Caller", ""),
-                    inc_section.get("Location", ""),
-                    None,  # opened_at — parse if available                    embedding_text,
+                    inc_section.get("Location", ""),                    
+                    None,  # opened_at — parse if available
+                    embedding_text,
                     "[" + ",".join(str(x) for x in embedding) + "]",
                 )
         except Exception as e:
