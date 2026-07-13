@@ -199,6 +199,11 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
             <p className="text-sm text-slate-600">
               Found <strong>{preview.total}</strong> new incident{preview.total === 1 ? '' : 's'} in range,{' '}
               <strong className="text-blue-600">{preview.db_count}</strong> synced to database
+              {preview.assignment_group && (
+                <span className="ml-2 text-xs text-slate-400">
+                  — assignment group: <strong className="text-slate-500">{preview.assignment_group}</strong>
+                </span>
+              )}
             </p>
           </div>
 
@@ -206,6 +211,11 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
             <div className="rounded-xl p-6 text-center border bg-amber-50 border-amber-200">
               <AlertCircle size={28} className="mx-auto text-amber-500 mb-2" />
               <p className="text-sm font-medium text-amber-800">No new incidents in this date range</p>
+              {preview.assignment_group && (
+                <p className="text-xs text-amber-600 mt-1">
+                  Filtered by assignment group: <strong>{preview.assignment_group}</strong>
+                </p>
+              )}
             </div>
           ) : (
             <>

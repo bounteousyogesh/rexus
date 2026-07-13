@@ -471,12 +471,14 @@ async def new_incidents_preview(
         _get_new_incidents(start_date=start, end_date=end),
         fetch_db_stats(),
     )
+    assignment_group = os.getenv("NEW_INCIDENTS_ASSIGNMENT_GROUP", "Application Support").strip() or "Application Support"
     return {
         "sync_date": end.isoformat(),
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
         "total": len(incidents),
         "incidents": incidents,
+        "assignment_group": assignment_group,
         **db_stats,
     }
 

@@ -48,6 +48,7 @@ export interface NewIncidentsPreview {
   incidents: NewIncident[];
   db_count: number;
   last_synced_at: string | null;
+  assignment_group?: string;
 }
 
 export interface NewIncidentsRunResponse {
