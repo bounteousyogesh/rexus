@@ -375,8 +375,8 @@ class ServiceNowClient:
             return False
         payload: dict = {
             "comments": comment,
-            "category": category or "Software",
-            "subcategory": subcategory or "Error Condition",
+            "category": category or "software",
+            "subcategory": subcategory or "error condition",
         }
         logger.info(
             "Posting REXUS comment to SN — incident=%s category=%r subcategory=%r comment_len=%d payload_keys=%s",

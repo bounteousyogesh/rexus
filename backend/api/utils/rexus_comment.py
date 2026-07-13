@@ -7,7 +7,7 @@ _SIMILAR_INCIDENTS_SHOWN = 5
 
 def rexus_public_url() -> str | None:
     """Return the configured public URL, or None if not set."""
-    url = (os.getenv("REXUS_PUBLIC_URL") or "").strip().rstrip("/")
+    url = (os.getenv("REXUS_PUBLIC_URL", "https://rexus.qa.discounttire.com") or "").strip().rstrip("/")
     return url or None
 
 
@@ -43,12 +43,12 @@ def build_rexus_analysis_comment(
     incident_word = "incident" if count == 1 else "incidents"
     similar_text = _format_similar_incidents(numbers, count)
 
-    link_line = f"🔗 {base_url}/?incident={inc}" if base_url else "(REXUS_PUBLIC_URL not configured)"
+    link_line = f"\n🔗 {base_url}/?incident={inc}" if base_url else "\n(REXUS_PUBLIC_URL not configured)"
 
     return (
         f"<b>[REXUS] Pre-triage intelligence available: Found {count} similar "
         f"{incident_word} ({pct}% match).</b>\n"
         "Prior resolutions, playbook actions, and KA/KB guidance are already available.\n"
-        f"<b>Review REXUS findings before starting triage. Similar Incidents:</b> {similar_text}\n"
+        f"<b>Review REXUS findings before starting triage. Similar Incidents:</b> {similar_text}"
         f"{link_line}"
     )
