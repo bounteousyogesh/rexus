@@ -26,10 +26,10 @@ interface NewIncidentsSyncPageProps {
 export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPageProps) {
   const { startDate, endDate, setStartDate, setEndDate } = useSyncDateRange('new-incidents');
   const [preview, setPreview] = useState<NewIncidentsPreview | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(true);  const [syncing, setSyncing] = useState(false);
   const [syncedNumbers, setSyncedNumbers] = useState<Set<string>>(new Set());
   const [manualResult, setManualResult] = useState<NewIncidentsRunResponse | null>(null);
+  const [ignoreAssignmentGroup, setIgnoreAssignmentGroup] = useState(true);
 
   const {
     config,
@@ -41,7 +41,6 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
   });
 
   const rangeError = validateSyncDateRange(startDate, endDate);
-
   const loadPreview = useCallback(async () => {
     const validation = validateSyncDateRange(startDate, endDate);
     if (validation) {
@@ -51,14 +50,18 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
     }
     setPreviewLoading(true);
     try {
-      setPreview(await api.newIncidentsPreview({ start_date: startDate, end_date: endDate }));
+      setPreview(await api.newIncidentsPreview({
+        start_date: startDate,
+        end_date: endDate,
+        ignore_assignment_group: ignoreAssignmentGroup,
+      }));
       setSyncedNumbers(new Set());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load incidents');
     } finally {
       setPreviewLoading(false);
     }
-  }, [startDate, endDate, setError]);
+  }, [startDate, endDate, ignoreAssignmentGroup, setError]);
 
   useEffect(() => {
     void loadPreview();
@@ -178,6 +181,17 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
             />
           </div>
           <p className="text-xs text-slate-400 pb-2">Max range: 7 days</p>
+          <label className="flex items-center gap-2 pb-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={ignoreAssignmentGroup}
+              onChange={(e) => setIgnoreAssignmentGroup(e.target.checked)}
+              className="w-4 h-4 rounded border-slate-300 text-blue-600 cursor-pointer"
+            />
+            <span className="text-xs text-slate-500">
+              Show all groups <span className="text-slate-400">(ignore assignment group filter)</span>
+            </span>
+          </label>
         </>
       }
     >
@@ -198,8 +212,9 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
           <div className="flex items-center justify-between">
             <p className="text-sm text-slate-600">
               Found <strong>{preview.total}</strong> new incident{preview.total === 1 ? '' : 's'} in range,{' '}
-              <strong className="text-blue-600">{preview.db_count}</strong> synced to database
-              {preview.assignment_group && (
+              <strong className="text-blue-600">{preview.db_count}</strong> synced to database              {preview.ignore_assignment_group ? (
+                <span className="ml-2 text-xs text-slate-400">— <span className="text-amber-500 font-medium">all assignment groups</span></span>
+              ) : preview.assignment_group && (
                 <span className="ml-2 text-xs text-slate-400">
                   — assignment group: <strong className="text-slate-500">{preview.assignment_group}</strong>
                 </span>
@@ -209,9 +224,10 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
 
           {incidents.length === 0 ? (
             <div className="rounded-xl p-6 text-center border bg-amber-50 border-amber-200">
-              <AlertCircle size={28} className="mx-auto text-amber-500 mb-2" />
-              <p className="text-sm font-medium text-amber-800">No new incidents in this date range</p>
-              {preview.assignment_group && (
+              <AlertCircle size={28} className="mx-auto text-amber-500 mb-2" />              <p className="text-sm font-medium text-amber-800">No new incidents in this date range</p>
+              {preview.ignore_assignment_group ? (
+                <p className="text-xs text-amber-600 mt-1">Showing all assignment groups</p>
+              ) : preview.assignment_group && (
                 <p className="text-xs text-amber-600 mt-1">
                   Filtered by assignment group: <strong>{preview.assignment_group}</strong>
                 </p>

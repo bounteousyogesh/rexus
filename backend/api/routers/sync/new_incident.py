@@ -132,11 +132,13 @@ async def _get_new_incidents(
     end: datetime | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
+    _override_assignment_group: str | None = ...,  # sentinel: use env var
 ) -> list[dict]:
     """Get New-state incidents from ServiceNow for a datetime or calendar-date window.
 
     Only incidents belonging to the configured assignment group are returned.
     Set NEW_INCIDENTS_ASSIGNMENT_GROUP env var to restrict (default: 'Application Support').
+    Pass _override_assignment_group=None explicitly to bypass the filter.
     """
     try:
         client = ServiceNowClient()
@@ -148,7 +150,11 @@ async def _get_new_incidents(
         end_date = end_date or start_date
         start, end = _day_bounds(start_date, end_date)
 
-    assignment_group = os.getenv("NEW_INCIDENTS_ASSIGNMENT_GROUP", "Application Support").strip() or None
+    # Use env-var default unless caller explicitly overrides (including None to disable)
+    if _override_assignment_group is ...:
+        assignment_group = os.getenv("NEW_INCIDENTS_ASSIGNMENT_GROUP", "Application Support").strip() or None
+    else:
+        assignment_group = _override_assignment_group
 
     logger.info(
         "Fetching new incidents from SN — window=%s → %s assignment_group=%r",
@@ -453,10 +459,12 @@ async def new_incidents_config_update(req: NewIncidentSyncConfigUpdate):
 async def new_incidents_preview(
     start_date: date | None = Query(None, description="YYYY-MM-DD (default: today)"),
     end_date: date | None = Query(None, description="YYYY-MM-DD (default: today)"),
+    ignore_assignment_group: bool = Query(False, description="If true, return all new incidents regardless of assignment group"),
 ):
     """Get new incidents from ServiceNow for the requested calendar date range.
 
     Max 7-day range is enforced in the UI only.
+    Pass ignore_assignment_group=true to bypass the assignment group filter.
     """
     start = start_date or date.today()
     end = end_date or date.today()
@@ -467,18 +475,21 @@ async def new_incidents_preview(
         async with pool.acquire() as conn:
             return await _db_stats_range(conn, start, end)
 
+    configured_group = os.getenv("NEW_INCIDENTS_ASSIGNMENT_GROUP", "Application Support").strip() or "Application Support"
+    effective_group = None if ignore_assignment_group else configured_group
+
     incidents, db_stats = await asyncio.gather(
-        _get_new_incidents(start_date=start, end_date=end),
+        _get_new_incidents(start_date=start, end_date=end, _override_assignment_group=effective_group),
         fetch_db_stats(),
     )
-    assignment_group = os.getenv("NEW_INCIDENTS_ASSIGNMENT_GROUP", "Application Support").strip() or "Application Support"
     return {
         "sync_date": end.isoformat(),
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
         "total": len(incidents),
         "incidents": incidents,
-        "assignment_group": assignment_group,
+        "assignment_group": configured_group if not ignore_assignment_group else None,
+        "ignore_assignment_group": ignore_assignment_group,
         **db_stats,
     }
 
