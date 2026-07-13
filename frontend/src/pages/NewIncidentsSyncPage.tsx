@@ -26,7 +26,8 @@ interface NewIncidentsSyncPageProps {
 export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPageProps) {
   const { startDate, endDate, setStartDate, setEndDate } = useSyncDateRange('new-incidents');
   const [preview, setPreview] = useState<NewIncidentsPreview | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(true);  const [syncing, setSyncing] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [syncedNumbers, setSyncedNumbers] = useState<Set<string>>(new Set());
   const [manualResult, setManualResult] = useState<NewIncidentsRunResponse | null>(null);
   const [ignoreAssignmentGroup, setIgnoreAssignmentGroup] = useState(false);
@@ -39,10 +40,9 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
   } = useScheduledSyncJob<NewIncidentSyncConfig>({
     getConfig: api.newIncidentsConfigGet,
   });
-
-  const rangeError = validateSyncDateRange(startDate, endDate);
+  const rangeError = validateSyncDateRange(startDate, endDate, 14);
   const loadPreview = useCallback(async () => {
-    const validation = validateSyncDateRange(startDate, endDate);
+    const validation = validateSyncDateRange(startDate, endDate, 14);
     if (validation) {
       setPreview(null);
       setPreviewLoading(false);
@@ -78,7 +78,7 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
 
   const runSync = useCallback(async (incidents: NewIncident[]) => {
     if (!incidents.length) return;
-    const validation = validateSyncDateRange(startDate, endDate);
+    const validation = validateSyncDateRange(startDate, endDate, 14);
     if (validation) {
       setError(validation);
       return;
@@ -180,7 +180,7 @@ export default function NewIncidentsSyncPage({ onBack }: NewIncidentsSyncPagePro
               className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm"
             />
           </div>
-          <p className="text-xs text-slate-400 pb-2">Max range: 7 days</p>
+          <p className="text-xs text-slate-400 pb-2">Max range: 14 days</p>
           <label className="flex items-center gap-2 pb-2 cursor-pointer select-none">
             <input
               type="checkbox"

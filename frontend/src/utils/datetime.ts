@@ -42,15 +42,15 @@ export function fromDatetimeLocalValue(local: string): string | null {
   return parsed.toISOString();
 }
 
-/** Validate manual From/To dates (max 7 inclusive calendar days). */
-export function validateSyncDateRange(startDate: string, endDate: string): string | null {
+/** Validate manual From/To dates. maxDays defaults to 7 (inclusive calendar days). */
+export function validateSyncDateRange(startDate: string, endDate: string, maxDays = 7): string | null {
   if (!startDate || !endDate) return 'Start and end dates are required';
   const start = new Date(`${startDate}T00:00:00`);
   const end = new Date(`${endDate}T00:00:00`);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 'Invalid date';
   if (end < start) return 'End date must be on or after start date';
   const days = Math.round((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
-  if (days > 6) return 'Date range must be at most 7 days';
+  if (days > maxDays - 1) return `Date range must be at most ${maxDays} days`;
   return null;
 }
 

@@ -34,6 +34,7 @@ from .sync import (
     batch_upsert_snapshots,
     enrich_incident_row,
     fetch_incidents_detailed,
+    incident_value,
     is_incident_state,
     limiter,
     map_detailed_to_row,
@@ -168,14 +169,33 @@ async def _get_new_incidents(
         lambda: client.get_new_incidents(start=start, end=end, assignment_group=assignment_group),
     )
     incidents = []
+    skipped_state = 0
+    skipped_cat = 0
     for inc in raw:
         if not is_incident_state(inc, "new"):
+            skipped_state += 1
+            continue
+        # Skip incidents that have no category or no subcategory — they are not
+        # ready for REXUS analysis and would produce low-quality results.
+        category = incident_value(inc, "category")
+        subcategory = incident_value(inc, "subcategory")
+        if not category or not subcategory:
+            logger.debug(
+                "Skipping %s — missing category=%r subcategory=%r",
+                incident_value(inc, "number", "incident_number"),
+                category or "",
+                subcategory or "",
+            )
+            skipped_cat += 1
             continue
         mapped = map_search_incident(inc, default_state="New")
         if mapped:
             incidents.append(mapped)
 
-    logger.info("New incidents from SN after state filter: %d", len(incidents))
+    logger.info(
+        "New incidents after filters: %d kept, %d skipped (state), %d skipped (no category/subcategory)",
+        len(incidents), skipped_state, skipped_cat,
+    )
     return incidents
 
 
@@ -464,12 +484,11 @@ async def new_incidents_config_update(req: NewIncidentSyncConfigUpdate):
 @router.get("/sync/new-incidents/preview")
 async def new_incidents_preview(
     start_date: date | None = Query(None, description="YYYY-MM-DD (default: today)"),
-    end_date: date | None = Query(None, description="YYYY-MM-DD (default: today)"),
-    ignore_assignment_group: bool = Query(False, description="If true, return all new incidents regardless of assignment group"),
+    end_date: date | None = Query(None, description="YYYY-MM-DD (default: today)"),    ignore_assignment_group: bool = Query(False, description="If true, return all new incidents regardless of assignment group"),
 ):
     """Get new incidents from ServiceNow for the requested calendar date range.
 
-    Max 7-day range is enforced in the UI only.
+    Max 14-day range is enforced in the UI only.
     Pass ignore_assignment_group=true to bypass the assignment group filter.
     """
     start = start_date or date.today()
