@@ -379,11 +379,17 @@ class ServiceNowClient:
             "subcategory": subcategory or "Error Condition",
         }
         logger.info(
-            "Posting REXUS comment to SN — incident=%s category=%s subcategory=%s comment_len=%d",
+            "Posting REXUS comment to SN — incident=%s category=%r subcategory=%r comment_len=%d payload_keys=%s",
             identifier,
             payload["category"],
             payload["subcategory"],
             len(comment),
+            list(payload.keys()),
+        )
+        logger.debug(
+            "SN comment PATCH full payload — incident=%s payload=%s",
+            identifier,
+            payload,
         )
         resp = requests.patch(
             f"{self.instance_url}/api/ditci/v1/servicenow/incident/{identifier}",
@@ -395,14 +401,17 @@ class ServiceNowClient:
             "SN comment PATCH response — incident=%s http_status=%s body=%s",
             identifier,
             resp.status_code,
-            resp.text[:500],
+            resp.text[:1000],
         )
         if resp.status_code != 200:
             logger.warning(
-                "Failed to add comment to %s: HTTP %s %s",
+                "Failed to add comment to %s: HTTP %s\n"
+                "  Payload sent: %s\n"
+                "  Response body: %s",
                 identifier,
                 resp.status_code,
-                resp.text[:200],
+                payload,
+                resp.text[:500],
             )
             return False
         body = resp.json()
