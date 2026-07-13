@@ -347,19 +347,29 @@ class ServiceNowClient:
                 return data["result"]["data"]
         return None
 
-    def add_incident_comment(self, identifier: str, comment: str, *, category: str | None = None) -> bool:
+    def add_incident_comment(
+        self,
+        identifier: str,
+        comment: str,
+        *,
+        category: str | None = None,
+        subcategory: str | None = None,
+    ) -> bool:
         """Append a caller-visible comment via PATCH /incident/{identifier}.
 
-        Some ServiceNow instances require ``category`` to be present on the
-        PATCH body when it is not already set on the incident.  Pass it here
-        so the API never returns a 400.
+        The DT ServiceNow API requires ``category`` and ``subcategory`` in the
+        PATCH body when they are not already set on the incident, otherwise it
+        returns HTTP 400.  Always include them (using safe fallbacks) so the
+        request never fails on a missing field.
         """
         comment = (comment or "").strip()
         if not comment:
             return False
-        payload: dict = {"comments": comment}
-        if category:
-            payload["category"] = category
+        payload: dict = {
+            "comments": comment,
+            "category": category or "Software",
+            "subcategory": subcategory or "Application",
+        }
         resp = requests.patch(
             f"{self.instance_url}/api/ditci/v1/servicenow/incident/{identifier}",
             headers={**self._headers(), "Content-Type": "application/json"},
