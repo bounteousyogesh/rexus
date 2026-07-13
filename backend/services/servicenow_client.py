@@ -232,12 +232,14 @@ class ServiceNowClient:
         *,
         start: datetime | None = None,
         end: datetime | None = None,
+        assignment_group: str | None = None,
     ) -> list[dict[str, Any]]:
         """Search incidents in a date window via the DT search API.
 
         Pass either a calendar day (sync_date) or an explicit datetime window
         (start/end). Datetime window takes precedence when both are provided.
         New-state filtering is applied by the sync router via is_incident_state.
+        Pass ``assignment_group`` to restrict results to a specific group.
         """
         if start is not None and end is not None:
             start_str = start.strftime("%Y-%m-%d %H:%M:%S")
@@ -246,9 +248,15 @@ class ServiceNowClient:
             day = (sync_date or date.today()).strftime("%Y-%m-%d")
             start_str = f"{day} 00:00:00"
             end_str = f"{day} 23:59:59"
+
+        filters: dict[str, str] = {}
+        if assignment_group:
+            filters["assignment_group"] = assignment_group
+
         raw = self.search_incidents(
             start_date=start_str,
             end_date=end_str,
+            **filters,
         )
         return raw
 
@@ -368,13 +376,26 @@ class ServiceNowClient:
         payload: dict = {
             "comments": comment,
             "category": category or "Software",
-            "subcategory": subcategory or "Application",
+            "subcategory": subcategory or "Error Condition",
         }
+        logger.info(
+            "Posting REXUS comment to SN — incident=%s category=%s subcategory=%s comment_len=%d",
+            identifier,
+            payload["category"],
+            payload["subcategory"],
+            len(comment),
+        )
         resp = requests.patch(
             f"{self.instance_url}/api/ditci/v1/servicenow/incident/{identifier}",
             headers={**self._headers(), "Content-Type": "application/json"},
             json=payload,
             timeout=self._timeout,
+        )
+        logger.info(
+            "SN comment PATCH response — incident=%s http_status=%s body=%s",
+            identifier,
+            resp.status_code,
+            resp.text[:500],
         )
         if resp.status_code != 200:
             logger.warning(

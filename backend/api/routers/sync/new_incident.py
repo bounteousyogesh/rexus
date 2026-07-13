@@ -133,7 +133,11 @@ async def _get_new_incidents(
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> list[dict]:
-    """Get New-state incidents from ServiceNow for a datetime or calendar-date window."""
+    """Get New-state incidents from ServiceNow for a datetime or calendar-date window.
+
+    Only incidents belonging to the configured assignment group are returned.
+    Set NEW_INCIDENTS_ASSIGNMENT_GROUP env var to restrict (default: 'Application Support').
+    """
     try:
         client = ServiceNowClient()
     except ValueError:
@@ -144,8 +148,15 @@ async def _get_new_incidents(
         end_date = end_date or start_date
         start, end = _day_bounds(start_date, end_date)
 
+    assignment_group = os.getenv("NEW_INCIDENTS_ASSIGNMENT_GROUP", "Application Support").strip() or None
+
+    logger.info(
+        "Fetching new incidents from SN — window=%s → %s assignment_group=%r",
+        start.isoformat(), end.isoformat(), assignment_group,
+    )
+
     raw = await asyncio.to_thread(
-        lambda: client.get_new_incidents(start=start, end=end),
+        lambda: client.get_new_incidents(start=start, end=end, assignment_group=assignment_group),
     )
     incidents = []
     for inc in raw:
@@ -154,6 +165,8 @@ async def _get_new_incidents(
         mapped = map_search_incident(inc, default_state="New")
         if mapped:
             incidents.append(mapped)
+
+    logger.info("New incidents from SN after state filter: %d", len(incidents))
     return incidents
 
 
@@ -304,7 +317,13 @@ async def _run_new_incident_sync_body(
         incident_numbers = [inc["incident_number"] for inc in incidents]
 
     if not incident_numbers:
+        _ag = os.getenv("NEW_INCIDENTS_ASSIGNMENT_GROUP", "Application Support").strip() or "Application Support"
+        logger.info(
+            "No new incidents found for assignment group %r in window %s → %s",
+            _ag, window_start.isoformat(), window_end.isoformat(),
+        )
         summary["status"] = "success"
+        summary["message"] = f"No new incidents found for assignment group '{_ag}'"
         db_stats = await _db_stats_range(conn, start_date, end_date)
         await _persist_scheduled_status(
             conn, run_at, summary["status"], {**summary, **db_stats}, trigger,
