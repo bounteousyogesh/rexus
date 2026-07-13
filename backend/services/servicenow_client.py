@@ -365,40 +365,24 @@ class ServiceNowClient:
         subcategory: str | None = None,
         sys_id: str | None = None,
     ) -> bool:
-        """Append a work note to a ServiceNow incident.
+        """Append a comment to a ServiceNow incident via the DT custom PATCH endpoint.
 
-        Uses the standard table API (PATCH /api/now/table/incident/{sys_id})
-        which only requires the ``work_notes`` field — no category/subcategory,
-        avoiding field-level security rejections from the DT custom endpoint.
-
-        Pass ``sys_id`` directly if available (from the detailed incident payload).
-        Falls back to looking up sys_id by incident number if not provided.
-        ``category`` and ``subcategory`` params are kept for call-site compatibility
-        but are not sent to the API.
+        Uses PATCH /api/ditci/v1/servicenow/incident/{identifier} with only
+        the ``comments`` field.  Including ``category`` or ``subcategory``
+        triggers field-level security errors (HTTP 500) so they are intentionally
+        excluded.  The params are kept for call-site compatibility only.
         """
         comment = (comment or "").strip()
         if not comment:
             return False
 
-        # Resolve sys_id — prefer passed value, fall back to lookup by number
-        resolved_sys_id = (sys_id or "").strip()
-        if not resolved_sys_id:
-            inc = self.search_incident_by_number(identifier, include_kb_articles=False)
-            resolved_sys_id = (inc or {}).get("sys_id", "").strip() if inc else ""
-        if not resolved_sys_id:
-            logger.warning(
-                "Cannot post comment to %s — sys_id not found", identifier
-            )
-            return False
-
-        payload = {"work_notes": comment}
-        patch_url = f"{self.instance_url}/api/now/table/incident/{resolved_sys_id}"
+        payload = {"comments": comment}
+        patch_url = f"{self.instance_url}/api/ditci/v1/servicenow/incident/{identifier}"
         logger.info(
-            "SN comment PATCH request (table API)\n  URL: %s\n  incident=%s sys_id=%s\n  Body: %s",
+            "SN comment PATCH request\n  URL: %s\n  incident=%s\n  Body: %s",
             patch_url,
             identifier,
-            resolved_sys_id,
-            json.dumps({"work_notes": comment[:200] + "…" if len(comment) > 200 else comment}, ensure_ascii=False),
+            json.dumps({"comments": comment[:200] + "…" if len(comment) > 200 else comment}, ensure_ascii=False),
         )
         resp = requests.patch(
             patch_url,
@@ -414,16 +398,23 @@ class ServiceNowClient:
         )
         if not resp.ok:
             logger.warning(
-                "Failed to add comment to %s (sys_id=%s): HTTP %s\n"
-                "  Response body: %s",
+                "Failed to add comment to %s: HTTP %s\n  Response body: %s",
                 identifier,
-                resolved_sys_id,
                 resp.status_code,
                 resp.text[:500],
             )
             return False
-        logger.info("Posted REXUS comment on %s (sys_id=%s)", identifier, resolved_sys_id)
-        return True
+        body = resp.json()
+        envelope = body.get("result", body)
+        if envelope.get("success"):
+            logger.info("Posted REXUS comment on %s", identifier)
+            return True
+        logger.warning(
+            "ServiceNow rejected comment on %s: %s",
+            identifier,
+            envelope.get("message"),
+        )
+        return False
 
     def search_incident_by_number(self, incident_number: str, include_kb_articles: bool = True) -> dict[str, Any] | None:
         """Fallback: fetch a single incident via the search API (returns kb_articles too)."""
