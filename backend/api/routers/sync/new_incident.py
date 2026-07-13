@@ -104,8 +104,8 @@ async def _analyze_and_comment(
                 sn_client.add_incident_comment,
                 inc_num,
                 comment,
-                category=(data.get("incident") or {}).get("category") or "inquiry",
-                subcategory=(data.get("incident") or {}).get("subcategory") or "",
+                category=(data.get("incident") or {}).get("category") or "software",
+                subcategory=(data.get("incident") or {}).get("subcategory") or "error condition",
             )
             if posted:
                 await _mark_incident_analyzed(pool, inc_num)
