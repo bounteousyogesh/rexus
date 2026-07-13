@@ -79,6 +79,14 @@ function fullUrl(path: string): string {
   return `${window.location.origin}${path}`;
 }
 
+// Paths that must never be forwarded to the backend log (health polls, the
+// log endpoint itself) — prevents infinite loops and pointless noise.
+const _NO_BACKEND_LOG = ['/health', `${BASE}/log/frontend`];
+
+function _shouldBackendLog(url: string): boolean {
+  return !_NO_BACKEND_LOG.some(skip => url.includes(skip));
+}
+
 function sendToBackendLog(entry: {
   level: string;
   method: string;
@@ -87,6 +95,7 @@ function sendToBackendLog(entry: {
   body?: unknown;
   response?: unknown;
 }) {
+  if (!_shouldBackendLog(entry.url)) return;
   // Fire-and-forget — never await, never throw
   fetch(`${BASE}/log/frontend`, {
     method: 'POST',

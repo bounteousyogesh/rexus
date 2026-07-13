@@ -10,6 +10,18 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 logger = logging.getLogger("rexus.frontend")
+# Attach a dedicated handler so these messages survive uvicorn's dictConfig
+# takeover, which resets the root logger but leaves named loggers with their
+# own handlers untouched.
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)-8s %(name)s  %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    ))
+    logger.addHandler(_h)
+    logger.propagate = False   # root logger already logs uvicorn lines; avoid duplicates
 
 router = APIRouter(tags=["internal"])
 

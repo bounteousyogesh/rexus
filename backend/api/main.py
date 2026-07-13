@@ -4,9 +4,43 @@ Incident intelligence API powered by pgvector similarity search.
 """
 
 import logging
+import logging.config
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+# ── Logging configuration ─────────────────────────────────────────────────────
+# Must be done before any module-level getLogger() calls take effect.
+_LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.config.dictConfig({
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "standard": {
+            "format": "%(asctime)s %(levelname)-8s %(name)s  %(message)s",
+            "datefmt": "%Y-%m-%dT%H:%M:%S",
+        }
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "standard",
+            "stream": "ext://sys.stdout",
+        }
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": _LOG_LEVEL,
+    },
+    "loggers": {
+        # Reduce noise from third-party libraries
+        "uvicorn.access": {"level": "WARNING", "propagate": True},
+        "httpx": {"level": "WARNING", "propagate": True},
+        "asyncpg": {"level": "WARNING", "propagate": True},
+        # Frontend API call logs — always at INFO regardless of root level
+        "rexus.frontend": {"level": "INFO", "propagate": True},
+    },
+})
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -72,8 +106,34 @@ async def _run_migrations() -> None:
             logger.warning("Migration %s skipped (may already be applied): %s", sql_file.name, exc)
 
 
+def _reconfigure_logging() -> None:
+    """
+    Re-apply our logging config after uvicorn's startup logging takeover.
+    Uvicorn calls logging.config.dictConfig on startup, which resets the root
+    logger.  Calling this inside lifespan ensures our settings win.
+    """
+    _lv = os.getenv("LOG_LEVEL", "INFO").upper()
+    root = logging.getLogger()
+    if not root.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)-8s %(name)s  %(message)s",
+                datefmt="%Y-%m-%dT%H:%M:%S",
+            )
+        )
+        root.addHandler(handler)
+    root.setLevel(_lv)
+    # Suppress noisy third-party loggers
+    for noisy in ("uvicorn.access", "httpx", "asyncpg"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+    # Guarantee frontend logs are visible regardless of root level
+    logging.getLogger("rexus.frontend").setLevel(logging.INFO)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _reconfigure_logging()
     await get_pool()
     await _run_migrations()
     try:
