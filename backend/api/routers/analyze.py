@@ -735,9 +735,8 @@ RULES: Only use information from the knowledge article text. Be specific and act
 
 # ── POST /analyze — from ServiceNow JSON ──────────────────────────
 
-@router.post("/analyze", response_model=AnalyzeResponse)
-@limiter.limit(os.getenv("RATE_LIMIT_ANALYZE", "20/minute"))
-async def analyze_ticket(request: Request, req: AnalyzeRequest):
+async def _run_analyze(req: AnalyzeRequest) -> dict:
+    """Core analysis logic — no HTTP plumbing. Called by the endpoint AND the sync pipeline."""
     cleaned_issue, embedding_text = build_embedding_text(req.ticket_json)
     if not embedding_text.strip():
         raise HTTPException(400, "No usable text found in ticket JSON")
@@ -1008,6 +1007,14 @@ async def analyze_ticket(request: Request, req: AnalyzeRequest):
 
     return result
 
+# ── POST /analyze — from ServiceNow JSON ──────────────────────────
+
+@router.post("/analyze", response_model=AnalyzeResponse)
+@limiter.limit(os.getenv("RATE_LIMIT_ANALYZE", "20/minute"))
+async def analyze_ticket(request: Request, req: AnalyzeRequest):
+    """HTTP endpoint — delegates to _run_analyze (no rate-limit / Request dependency there)."""
+    return await _run_analyze(req)
+
 # ── POST /analyze/text — from plain text ──────────────────────────
 
 @router.post("/analyze/text", response_model=AnalyzeResponse)
@@ -1015,8 +1022,7 @@ async def analyze_ticket(request: Request, req: AnalyzeRequest):
 async def analyze_text(request: Request, req: AnalyzeTextRequest):
     """
     Analyze from plain text (wraps into ticket_json format).
-    ENH-015: This is an intentional convenience wrapper — it normalises the plain-text
-    input into the same ticket_json shape that analyze_ticket expects.
+    ENH-015: This is an intentional convenience wrapper — it normalises the plain-text    input into the same ticket_json shape that analyze_ticket expects.
     """
     ticket_json = {
         "pdf_fields": {"Short description": req.text, "Description": ""},
@@ -1024,7 +1030,7 @@ async def analyze_text(request: Request, req: AnalyzeTextRequest):
         "resolution_information_section": {},
     }
     wrapped_req = AnalyzeRequest(ticket_json=ticket_json, limit=req.limit, threshold=req.threshold)
-    return await analyze_ticket(request, wrapped_req)
+    return await _run_analyze(wrapped_req)
 
 # ── ServiceNow incident fetch + analyze ──────────────────────────
 
@@ -1272,10 +1278,9 @@ async def analyze_from_servicenow(request: Request, incident_number: str,
     data = await asyncio.to_thread(sn_client.get_incident_detailed, incident_number)
     if not data:
         raise HTTPException(404, f"Incident {incident_number} not found in ServiceNow")
-
     ticket_json = await _build_ticket_json_from_sn(data, incident_number)
     wrapped_req = AnalyzeRequest(ticket_json=ticket_json, limit=limit, threshold=threshold)
-    return await analyze_ticket(request, wrapped_req)
+    return await _run_analyze(wrapped_req)
 
 # ── POST /parse-pdf — upload PDF, return JSON ─────────────────────
 

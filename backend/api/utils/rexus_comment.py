@@ -4,11 +4,12 @@ import os
 
 _SIMILAR_INCIDENTS_SHOWN = 5
 
-def rexus_public_url() -> str:
+
+def rexus_public_url() -> str | None:
+    """Return the configured public URL, or None if not set."""
     url = (os.getenv("REXUS_PUBLIC_URL") or "").strip().rstrip("/")
-    if not url:
-        raise ValueError("REXUS_PUBLIC_URL is not set in the environment")
-    return url
+    return url or None
+
 
 def _format_similar_incidents(similar_incident_numbers: list[str], match_count: int) -> str:
     instance = (os.getenv("SERVICENOW_INSTANCE") or "").strip().rstrip("/")
@@ -24,6 +25,7 @@ def _format_similar_incidents(similar_incident_numbers: list[str], match_count: 
     suffix = f" (+{extra} more in REXUS)" if extra > 0 else ""
     return ", ".join(links) + suffix
 
+
 def build_rexus_analysis_comment(
     incident_number: str,
     confidence_score: float,
@@ -34,17 +36,19 @@ def build_rexus_analysis_comment(
     """Four-line briefing posted to ServiceNow after sync-and-analyze."""
     inc = (incident_number or "").strip().upper()
     pct = round(min(max(confidence_score, 0.0), 1.0) * 100)
-    rexus_url = f"{rexus_public_url()}/?incident={inc}"
+    base_url = rexus_public_url()
 
     numbers = similar_incident_numbers or []
     count = match_count if match_count > 0 else len(numbers)
     incident_word = "incident" if count == 1 else "incidents"
     similar_text = _format_similar_incidents(numbers, count)
 
+    link_line = f"🔗 {base_url}/?incident={inc}" if base_url else "(REXUS_PUBLIC_URL not configured)"
+
     return (
         f"<b>[REXUS] Pre-triage intelligence available: Found {count} similar "
         f"{incident_word} ({pct}% match).</b>\n"
         "Prior resolutions, playbook actions, and KA/KB guidance are already available.\n"
         f"<b>Review REXUS findings before starting triage. Similar Incidents:</b> {similar_text}\n"
-        f"🔗{rexus_url}"
+        f"{link_line}"
     )

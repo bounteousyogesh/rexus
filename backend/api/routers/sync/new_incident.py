@@ -12,14 +12,13 @@ import os
 import asyncio
 import logging
 from datetime import date, datetime, time
-from types import SimpleNamespace
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from backend.api.database import get_pool
 from backend.api.models.analyze import AnalyzeRequest
 from backend.api.models.sync import NewIncidentSyncConfigUpdate, NewIncidentsRunRequest
-from backend.api.routers.analyze import _build_ticket_json_from_sn, analyze_ticket
+from backend.api.routers.analyze import _build_ticket_json_from_sn, _run_analyze
 from backend.api.utils.rexus_comment import build_rexus_analysis_comment
 from backend.api.utils.sync_config import (
     fetch_sync_config,
@@ -62,7 +61,6 @@ async def _mark_incident_analyzed(pool, incident_number: str) -> None:
 
 
 async def _analyze_and_comment(
-    request: Request,
     sn_client: ServiceNowClient,
     payloads: list[dict],
     *,
@@ -78,10 +76,19 @@ async def _analyze_and_comment(
             comments_failed += 1
             continue
         inc_num = row["incident_number"]
+
+        # Only post comments on open/new incidents — never on closed or resolved ones
+        state = (row.get("state") or "").strip().lower()
+        if state and state not in ("new", "in progress", "on hold", "open", "assigned"):
+            logger.info(
+                "Skipping REXUS comment for %s — state is '%s' (not a new/open state)",
+                inc_num, row.get("state"),
+            )
+            continue
+
         try:
             ticket_json = await _build_ticket_json_from_sn(data, inc_num)
-            analyze_result = await analyze_ticket.__wrapped__(
-                request,
+            analyze_result = await _run_analyze(
                 AnalyzeRequest(ticket_json=ticket_json),
             )
             comment = build_rexus_analysis_comment(
@@ -342,9 +349,7 @@ async def _run_new_incident_sync_body(
         errors = len(incidents)
         logger.error("Upsert failed for %d incidents: %s", len(incidents), e, exc_info=True)
     db_stats = await _db_stats_range(conn, start_date, end_date)
-
     comments_posted, comments_failed = await _analyze_and_comment(
-        request or SimpleNamespace(),
         sn_client,
         payloads,
         pool=pool,
