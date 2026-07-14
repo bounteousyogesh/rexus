@@ -31,15 +31,14 @@ def test_build_rexus_analysis_comment_full_format():
         match_count=8,
         similar_incident_numbers=similar,
     )
-
     assert "[REXUS] Pre-triage intelligence available: Found 8 similar incidents (92% match)." in comment
     assert "<b>" not in comment
     assert "Prior resolutions, playbook actions, and KA/KB guidance are already available." in comment
     assert "Review REXUS findings before starting triage. Similar Incidents:" in comment
-    assert "https://dtcprod.service-now.com/nav_to.do?uri=incident.do%3Fsysparm_query%3Dnumber%3DINC2401234" in comment
-    assert "<a href=" not in comment
+    assert "[code]<a href='https://dtcprod.service-now.com/nav_to.do?uri=incident.do%3Fsysparm_query%3Dnumber%3DINC2401234' target='_blank'>INC2401234</a>[/code]" in comment
+    assert "<a href=" in comment
     assert "(+3 more in REXUS)" in comment
-    assert "🔗 https://rexus.discounttire.com/?incident=INC2409818" in comment
+    assert "[code]<a href='https://rexus.discounttire.com/?incident=INC2409818' target='_blank'>Open in REXUS</a>[/code]" in comment
 
 
 def test_build_rexus_analysis_comment_without_servicenow_instance():

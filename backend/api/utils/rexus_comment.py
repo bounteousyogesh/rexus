@@ -20,7 +20,7 @@ def _format_similar_incidents(similar_incident_numbers: list[str], match_count: 
 
     if instance:
         lines = [
-            f"{instance}/nav_to.do?uri={quote(f'incident.do?sysparm_query=number={n}')}"
+            f"[code]<a href='{instance}/nav_to.do?uri={quote(f'incident.do?sysparm_query=number={n}')}' target='_blank'>{n}</a>[/code]"
             for n in shown
         ]
     else:
@@ -48,7 +48,10 @@ def build_rexus_analysis_comment(
     incident_word = "incident" if count == 1 else "incidents"
     similar_text = _format_similar_incidents(numbers, count)
 
-    link_line = f"\n🔗 {base_url}/?incident={inc}" if base_url else "\n(REXUS_PUBLIC_URL not configured)"
+    if base_url:
+        link_line = f"\n[code]<a href='{base_url}/?incident={inc}' target='_blank'>Open in REXUS</a>[/code]"
+    else:
+        link_line = "\n(REXUS_PUBLIC_URL not configured)"
 
     return (
         f"[REXUS] Pre-triage intelligence available: Found {count} similar "
