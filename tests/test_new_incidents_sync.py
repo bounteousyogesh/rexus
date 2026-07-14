@@ -88,8 +88,8 @@ def test_get_new_incidents_filters_non_new_state():
 @pytest.mark.asyncio
 async def test_get_new_incidents_router_filters_non_new_state(monkeypatch):
     raw = [
-        {"number": "INC0000001", "incident_state_display": "New"},
-        {"number": "INC0000002", "incident_state_display": "In Progress"},
+        {"number": "INC0000001", "incident_state_display": "New", "category": "Software", "subcategory": "Application"},
+        {"number": "INC0000002", "incident_state_display": "In Progress", "category": "Software", "subcategory": "Application"},
     ]
     monkeypatch.setattr(
         "backend.api.routers.sync.new_incident.ServiceNowClient",
@@ -112,6 +112,8 @@ async def test_get_new_incidents_router_maps_search_results(monkeypatch):
         "short_description": "Disk full",
         "opened_at": f"{date.today().isoformat()} 10:00:00",
         "incident_state_display": "New",
+        "category": "Software",
+        "subcategory": "Application",
     }]
     monkeypatch.setattr(
         "backend.api.routers.sync.new_incident.ServiceNowClient",

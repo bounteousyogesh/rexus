@@ -32,15 +32,14 @@ def test_build_rexus_analysis_comment_full_format():
         similar_incident_numbers=similar,
     )
 
-    assert (
-        "<b>[REXUS] Pre-triage intelligence available: Found 8 similar incidents "
-        "(92% match).</b>"
-    ) in comment
+    assert "[REXUS] Pre-triage intelligence available: Found 8 similar incidents (92% match)." in comment
+    assert "<b>" not in comment
     assert "Prior resolutions, playbook actions, and KA/KB guidance are already available." in comment
-    assert "<b>Review REXUS findings before starting triage. Similar Incidents:</b>" in comment
-    assert 'href="https://dtcprod.service-now.com/nav_to.do?uri=incident.do?sysparm_query=number=INC2401234">INC2401234</a>' in comment
+    assert "Review REXUS findings before starting triage. Similar Incidents:" in comment
+    assert "https://dtcprod.service-now.com/nav_to.do?uri=incident.do%3Fsysparm_query%3Dnumber%3DINC2401234" in comment
+    assert "<a href=" not in comment
     assert "(+3 more in REXUS)" in comment
-    assert comment.endswith("🔗https://rexus.discounttire.com/?incident=INC2409818")
+    assert "🔗 https://rexus.discounttire.com/?incident=INC2409818" in comment
 
 
 def test_build_rexus_analysis_comment_without_servicenow_instance():
@@ -52,7 +51,8 @@ def test_build_rexus_analysis_comment_without_servicenow_instance():
             similar_incident_numbers=["INC2401234", "INC2405678"],
         )
 
-    assert "INC2401234, INC2405678" in comment
+    assert "INC2401234" in comment
+    assert "INC2405678" in comment
     assert "<a href=" not in comment
 
 
@@ -60,4 +60,6 @@ def test_build_rexus_analysis_comment_no_similar_incidents():
     comment = build_rexus_analysis_comment("INC2409818", 0.0, match_count=0)
 
     assert "Found 0 similar incidents (0% match)" in comment
-    assert "Similar Incidents:</b> None found" in comment
+    assert "Similar Incidents:" in comment
+    assert "None found" in comment
+    assert "<b>" not in comment

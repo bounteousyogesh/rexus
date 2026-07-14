@@ -392,8 +392,7 @@ class ServiceNowClient:
 
         Uses PATCH /api/ditci/v1/servicenow/incident/{identifier} with only
         the ``comments`` field.  Including ``category`` or ``subcategory``
-        triggers field-level security errors (HTTP 500) so they are intentionally
-        excluded.  The params are kept for call-site compatibility only.
+        triggers field-level security errors (HTTP 500) so they are intentionally        excluded.  The params are kept for call-site compatibility only.
         """
         comment = (comment or "").strip()
         if not comment:
@@ -402,10 +401,10 @@ class ServiceNowClient:
         payload = {"comments": comment}
         patch_url = f"{self.instance_url}/api/ditci/v1/servicenow/incident/{identifier}"
         logger.info(
-            "SN comment PATCH request\n  URL: %s\n  incident=%s\n  Body: %s",
+            "SN comment PATCH request\n  URL: %s\n  incident=%s\n  Body:\n%s",
             patch_url,
             identifier,
-            json.dumps({"comments": comment[:200] + "…" if len(comment) > 200 else comment}, ensure_ascii=False),
+            json.dumps({"comments": comment}, ensure_ascii=False),
         )
         resp = requests.patch(
             patch_url,

@@ -12,22 +12,23 @@ def rexus_public_url() -> str | None:
 
 
 def _format_similar_incidents(similar_incident_numbers: list[str], match_count: int) -> str:
+    from urllib.parse import quote
     instance = (os.getenv("SERVICENOW_INSTANCE") or "").strip().rstrip("/")
     shown = [n.strip().upper() for n in similar_incident_numbers if n and n.strip()][:_SIMILAR_INCIDENTS_SHOWN]
     if not shown:
         return "None found"
 
-    # Build deep-links only when SERVICENOW_INSTANCE is set.
-    # URI component is percent-encoded to avoid nested query string ambiguity.
-    from urllib.parse import quote
-    links = [
-        f'<a href="{instance}/nav_to.do?uri={quote(f"incident.do?sysparm_query=number={n}")}">{n}</a>'
-        if instance else n
-        for n in shown
-    ]
+    if instance:
+        lines = [
+            f"{instance}/nav_to.do?uri={quote(f'incident.do?sysparm_query=number={n}')}"
+            for n in shown
+        ]
+    else:
+        lines = shown
+
     extra = match_count - len(shown)
-    suffix = f" (+{extra} more in REXUS)" if extra > 0 else ""
-    return ", ".join(links) + suffix
+    suffix = f"\n(+{extra} more in REXUS)" if extra > 0 else ""
+    return "\n" + "\n".join(lines) + suffix
 
 
 def build_rexus_analysis_comment(
@@ -50,9 +51,10 @@ def build_rexus_analysis_comment(
     link_line = f"\n🔗 {base_url}/?incident={inc}" if base_url else "\n(REXUS_PUBLIC_URL not configured)"
 
     return (
-        f"<b>[REXUS] Pre-triage intelligence available: Found {count} similar "
-        f"{incident_word} ({pct}% match).</b>\n"
+        f"[REXUS] Pre-triage intelligence available: Found {count} similar "
+        f"{incident_word} ({pct}% match).\n"
         "Prior resolutions, playbook actions, and KA/KB guidance are already available.\n"
-        f"<b>Review REXUS findings before starting triage. Similar Incidents:</b> {similar_text}"
+        f"Review REXUS findings before starting triage. Similar Incidents:"
+        f"{similar_text}"
         f"{link_line}"
     )
